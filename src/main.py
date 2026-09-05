@@ -232,7 +232,7 @@ if __name__ == '__main__':
 
     sys.argv += ['-platform', 'windows:darkmode=2']
     app = QApplication(sys.argv)
-    app.styleHints().setColorScheme(Qt.ColorScheme.Dark)
+    app.styleHints().colorScheme = Qt.ColorScheme.Dark
 
     window = Window()
     window.show()
