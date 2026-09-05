@@ -9,7 +9,7 @@ from PySide6.QtCore import QTimer, Qt, QRect
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QTextEdit,
-    QLabel, QPushButton, QWidget, QVBoxLayout, QFrame
+    QLabel, QPushButton, QWidget, QVBoxLayout, QHBoxLayout, QFrame
 )
 from extras import CodeEditor, MessageBox
 
