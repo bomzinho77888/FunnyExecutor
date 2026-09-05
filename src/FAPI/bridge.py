@@ -6,6 +6,7 @@ import hmac as hmac_mod
 import json
 import shutil
 import subprocess
+import threading
 from http.server import BaseHTTPRequestHandler
 import socketserver
 from threading import Thread
@@ -21,6 +22,9 @@ from .compiler import Luau
 appdata = Path(os.environ['APPDATA'])
 parent = appdata / 'FunnyExecutor'
 old_parent = Path(__file__).resolve().parent
+
+_console_logs = []
+_console_logs_lock = threading.Lock()
 
 if os.path.exists(old_parent / 'workspace'):
     shutil.copytree(old_parent / 'workspace', appdata / 'workspace')
@@ -545,10 +549,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/plain')
         self.end_headers()
-
         self.wfile.write(_target_source)
 
     def do_POST(self):
+        if self.path == '/log':
+            try:
+                content_length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(content_length)
+                data = json.loads(raw.decode('utf-8'))
+                with _console_logs_lock:
+                    _console_logs.append({
+                        'tag': str(data.get('type', 'output')),
+                        'message': str(data.get('message', '')),
+                        'timestamp': data.get('timestamp'),
+                    })
+                self.send_response(204)
+                self.end_headers()
+                return
+            except Exception:
+                self.send_response(400)
+                self.end_headers()
+                return
+
         content_length = int(self.headers.get('Content-Length', 0))
         body_data = self.rfile.read(content_length)
 
@@ -556,13 +578,11 @@ class Handler(BaseHTTPRequestHandler):
         method = args.pop(0).decode('utf-8')
 
         response = recv_method(method, args)
-        print(response)
 
         self.send_response(200)
-        self.send_header("Content-Type", "text/plain")  # application/json
+        self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(response)))
         self.end_headers()
-
         self.wfile.write(response)
 
 _target_source = b'1234'

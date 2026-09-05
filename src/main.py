@@ -2,18 +2,14 @@ import json
 import os.path
 import shutil
 import sys
-import threading
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from design import Ui_MainWindow
 
 from PySide6.QtCore import QTimer, Qt, QRect
-from PySide6.QtGui import QFont, QColor, QTextCursor
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QFileDialog, QTextEdit,
-    QLabel, QPushButton, QWidget, QHBoxLayout, QVBoxLayout,
-    QFrame, QSizePolicy
+    QLabel, QPushButton, QWidget, QVBoxLayout, QFrame
 )
 from extras import CodeEditor, MessageBox
 
@@ -21,58 +17,6 @@ import FAPI
 
 executor: FAPI.Executor | None = None
 sdk: FAPI.sdk.Roblox | None = None
-
-HOST = "127.0.0.1"
-LOG_PORT = 3000
-
-
-class LogHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/log":
-            self.send_response(404)
-            self.end_headers()
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length)
-            data = json.loads(raw.decode("utf-8"))
-            message = str(data.get("message", ""))
-            log_type = str(data.get("type", "Unknown"))
-            timestamp = data.get("timestamp")
-            log_window_ref[0].add_log(message, log_type, timestamp)
-            self.send_response(204)
-            self.end_headers()
-        except Exception:
-            self.send_response(400)
-            self.end_headers()
-
-    def do_GET(self):
-        if self.path == "/health":
-            body = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, *_):
-        pass
-
-
-log_window_ref = [None]
-
-
-def start_log_server():
-    try:
-        server = ThreadingHTTPServer((HOST, LOG_PORT), LogHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        return True
-    except OSError:
-        return False
 
 
 def load_exec():
@@ -209,6 +153,10 @@ class Window(QMainWindow, Ui_MainWindow):
         timer_autosave.timeout.connect(self._save_tabs)
         timer_autosave.start(10000)
 
+        timer_poll = QTimer(self)
+        timer_poll.timeout.connect(self._poll_logs)
+        timer_poll.start(200)
+
     def _setup_console(self):
         self.consoleToggleButton = QPushButton("Console", self.centralwidget)
         self.consoleToggleButton.setObjectName("consoleToggleButton")
@@ -230,7 +178,7 @@ class Window(QMainWindow, Ui_MainWindow):
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(8, 0, 8, 0)
 
-        server_status = QLabel(f"●  localhost:{LOG_PORT}")
+        server_status = QLabel("●  localhost:9475")
         server_status.setStyleSheet("color: #48d597; font-size: 10px; background: transparent;")
         toolbar_layout.addWidget(server_status)
 
@@ -268,36 +216,6 @@ class Window(QMainWindow, Ui_MainWindow):
         )
         layout.addWidget(self.consoleText)
 
-        log_window_ref[0] = self
-
-    def add_log(self, message, log_type, timestamp=None):
-        self._log_count += 1
-
-        if timestamp:
-            try:
-                ts = float(timestamp)
-                time_text = datetime.fromtimestamp(ts / 1000).strftime("%H:%M:%S")
-            except Exception:
-                time_text = datetime.now().strftime("%H:%M:%S")
-        else:
-            time_text = datetime.now().strftime("%H:%M:%S")
-
-        typ = self._normalize_type(log_type)
-
-        color = "#8fa1b5"
-        if typ == "WARN":
-            color = "#e8c56b"
-        elif typ == "ERROR":
-            color = "#f07878"
-
-        self.consoleText.append(
-            f'<span style="color:#59616c;">[{time_text}]</span> '
-            f'<span style="color:{color};">{typ:&lt;8}</span> '
-            f'<span style="color:#d7dce2;">{message}</span>'
-        )
-        self.consoleText.moveCursor(QTextCursor.MoveOperation.End)
-        self.logCountLabel.setText(f"{self._log_count} log{'s' if self._log_count != 1 else ''}")
-
     @staticmethod
     def _normalize_type(value):
         value = str(value)
@@ -326,6 +244,46 @@ class Window(QMainWindow, Ui_MainWindow):
         else:
             self.consolePanel.hide()
             self.tabWidget.setGeometry(10, 35, 821, 456)
+
+    def _poll_logs(self):
+        try:
+            with FAPI.bridge._console_logs_lock:
+                logs = list(FAPI.bridge._console_logs)
+                FAPI.bridge._console_logs.clear()
+            for log in logs:
+                self._log_count += 1
+                if self._console_visible:
+                    self._display_log(log.get('message', ''), log.get('tag', 'output'), log.get('timestamp'))
+                    self.logCountLabel.setText(f"{self._log_count} log{'s' if self._log_count != 1 else ''}")
+        except Exception:
+            pass
+
+    def _display_log(self, message, log_type, timestamp=None):
+        if timestamp:
+            try:
+                ts = float(timestamp)
+                if ts > 1e12:
+                    ts = ts / 1000
+                time_text = __import__('datetime').datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+            except Exception:
+                time_text = __import__('datetime').datetime.now().strftime("%H:%M:%S")
+        else:
+            time_text = __import__('datetime').datetime.now().strftime("%H:%M:%S")
+
+        typ = self._normalize_type(log_type)
+
+        color = "#8fa1b5"
+        if typ == "WARN":
+            color = "#e8c56b"
+        elif typ == "ERROR":
+            color = "#f07878"
+
+        self.consoleText.append(
+            f'<span style="color:#59616c;">[{time_text}]</span> '
+            f'<span style="color:{color};">{typ:&lt;8}</span> '
+            f'<span style="color:#d7dce2;">{message}</span>'
+        )
+        self.consoleText.moveCursor(QTextCursor.MoveOperation.End)
 
     def _save_tabs(self):
         data = [self._tab_number]
@@ -391,8 +349,6 @@ if __name__ == '__main__':
     sys.argv += ['-platform', 'windows:darkmode=2']
     app = QApplication(sys.argv)
     app.styleHints().colorScheme = Qt.ColorScheme.Dark
-
-    start_log_server()
 
     window = Window()
     window.show()
