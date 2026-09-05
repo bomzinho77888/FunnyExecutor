@@ -25,6 +25,8 @@ old_parent = Path(__file__).resolve().parent
 
 _console_logs = []
 _console_logs_lock = threading.Lock()
+_console_last_msg = None
+_console_repeat_count = 0
 
 if os.path.exists(old_parent / 'workspace'):
     shutil.copytree(old_parent / 'workspace', appdata / 'workspace')
@@ -553,18 +555,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == '/log':
+            global _console_last_msg, _console_repeat_count
             try:
                 content_length = int(self.headers.get('Content-Length', 0))
                 raw = self.rfile.read(content_length)
                 data = json.loads(raw.decode('utf-8'))
+                msg = str(data.get('message', ''))
+                log_type = str(data.get('type', 'output'))
+                timestamp = data.get('timestamp')
+
                 with _console_logs_lock:
+                    if msg == _console_last_msg:
+                        _console_repeat_count += 1
+                        if _console_repeat_count > 3:
+                            body = b'{"ok":true}'
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+                    else:
+                        _console_last_msg = msg
+                        _console_repeat_count = 0
+
                     _console_logs.append({
-                        'tag': str(data.get('type', 'output')),
-                        'message': str(data.get('message', '')),
-                        'timestamp': data.get('timestamp'),
+                        'tag': log_type,
+                        'message': msg,
+                        'timestamp': timestamp,
                     })
-                self.send_response(204)
+                body = b'{"ok":true}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
+                self.wfile.write(body)
                 return
             except Exception:
                 self.send_response(400)
