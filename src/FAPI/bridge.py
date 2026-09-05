@@ -541,6 +541,33 @@ def recv_method(method, args):
             l.append(rel.encode('utf-8'))
         return b'\n'.join(l)
 
+    elif method == 'log':
+        global _console_last_msg, _console_repeat_count
+        try:
+            raw = args[0] if args else b'{}'
+            data = json.loads(raw.decode('utf-8'))
+            msg = str(data.get('message', ''))
+            log_type = str(data.get('type', 'output'))
+            timestamp = data.get('timestamp')
+
+            with _console_logs_lock:
+                if msg == _console_last_msg:
+                    _console_repeat_count += 1
+                    if _console_repeat_count > 3:
+                        return b'ok'
+                else:
+                    _console_last_msg = msg
+                    _console_repeat_count = 0
+
+                _console_logs.append({
+                    'tag': log_type,
+                    'message': msg,
+                    'timestamp': timestamp,
+                })
+            return b'ok'
+        except Exception:
+            return b'fail'
+
     return b'bad request'
 
 class Handler(BaseHTTPRequestHandler):
@@ -554,48 +581,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(_target_source)
 
     def do_POST(self):
-        if self.path == '/log':
-            global _console_last_msg, _console_repeat_count
-            try:
-                content_length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(content_length)
-                data = json.loads(raw.decode('utf-8'))
-                msg = str(data.get('message', ''))
-                log_type = str(data.get('type', 'output'))
-                timestamp = data.get('timestamp')
-
-                with _console_logs_lock:
-                    if msg == _console_last_msg:
-                        _console_repeat_count += 1
-                        if _console_repeat_count > 3:
-                            body = b'{"ok":true}'
-                            self.send_response(200)
-                            self.send_header("Content-Type", "application/json")
-                            self.send_header("Content-Length", str(len(body)))
-                            self.end_headers()
-                            self.wfile.write(body)
-                            return
-                    else:
-                        _console_last_msg = msg
-                        _console_repeat_count = 0
-
-                    _console_logs.append({
-                        'tag': log_type,
-                        'message': msg,
-                        'timestamp': timestamp,
-                    })
-                body = b'{"ok":true}'
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            except Exception:
-                self.send_response(400)
-                self.end_headers()
-                return
-
         content_length = int(self.headers.get('Content-Length', 0))
         body_data = self.rfile.read(content_length)
 
