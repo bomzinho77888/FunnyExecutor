@@ -1690,50 +1690,12 @@ isourclosure = isexecutorclosure
 -- cloneref / compareinstances
 
 local clonerefs = {}
-setmetatable(clonerefs, {__mode = 'v'})
-
-local function clone_target(proxy)
-	local obj = clonerefs[proxy]
-	if obj == nil then
-		error('cloneref target is no longer valid', 3)
-	end
-	return obj
-end
-
-cloneref = function(obj)
-	local proxy = newproxy(true)
-	local meta = getmetatable(proxy)
-	clonerefs[proxy] = obj
-	meta.__index = function(_, n)
-		local o = clonerefs[proxy]
-		if not o then error('cloneref target is no longer valid', 2) end
-		local v = o[n]
-		if typeof(v) == 'function' then
-			local ref = proxy
-			return function(self, ...)
-				if self == ref then
-					self = o
-				end
-				return v(self, ...)
-			end
-		end
-		return v
-	end
-	meta.__newindex = function(_, n, v)
-		local o = clonerefs[proxy]
-		if not o then error('cloneref target is no longer valid', 2) end
-		o[n] = v
-	end
-	meta.__tostring = function()
-		local o = clonerefs[proxy]
-		if not o then return '' end
-		return tostring(o)
-	end
-	meta.__metatable = getmetatable(obj)
-	return proxy
-end
+setmetatable(clonerefs, {__mode = 'k'})
 
 local function is_instance_like(v)
+	if clonerefs[v] then
+		return true
+	end
 	if type(v) == 'userdata' then
 		return true
 	end
@@ -1746,13 +1708,97 @@ local function is_instance_like(v)
 	return false
 end
 
+local function clone_target(proxy)
+	local obj = clonerefs[proxy]
+	if obj == nil then
+		error('cloneref target is no longer valid', 3)
+	end
+	return obj
+end
+
+cloneref = function(obj)
+	assert(is_instance_like(obj), "invalid argument #1 to 'cloneref' (Instance expected, got " .. typeof(obj) .. ')', 2)
+
+	local target = obj
+	while clonerefs[target] do
+		target = clonerefs[target]
+	end
+
+	local proxy = newproxy(true)
+	local meta = getmetatable(proxy)
+	clonerefs[proxy] = target
+
+	meta.__index = function(_, n)
+		local o = clonerefs[proxy] or target
+		local v = o[n]
+		if typeof(v) == 'function' then
+			local ref = proxy
+			return function(self, ...)
+				local args = table.pack(...)
+				for i = 1, args.n do
+					local a = args[i]
+					while clonerefs[a] do
+						a = clonerefs[a]
+					end
+					args[i] = a
+				end
+				if self == ref then
+					self = o
+				elseif clonerefs[self] then
+					local s = self
+					while clonerefs[s] do
+						s = clonerefs[s]
+					end
+					self = s
+				end
+				return v(self, table.unpack(args, 1, args.n))
+			end
+		end
+		return v
+	end
+
+	meta.__newindex = function(_, n, v)
+		local o = clonerefs[proxy] or target
+		if clonerefs[v] then
+			local uv = v
+			while clonerefs[uv] do
+				uv = clonerefs[uv]
+			end
+			v = uv
+		end
+		o[n] = v
+	end
+
+	meta.__tostring = function()
+		local o = clonerefs[proxy] or target
+		return tostring(o)
+	end
+
+	meta.__iter = function()
+		local o = clonerefs[proxy] or target
+		local children = o:GetChildren()
+		local i = 0
+		return function()
+			i += 1
+			return children[i]
+		end
+	end
+
+	meta.__len = function()
+		error("attempt to get length of a Instance value", 2)
+	end
+
+	meta.__metatable = getmetatable(target)
+	return proxy
+end
+
 compareinstances = function(a, b)
 	assert(is_instance_like(a), "invalid argument #1 to 'compareinstances' (Instance expected, got " .. typeof(a) .. ')', 2)
 	assert(is_instance_like(b), "invalid argument #2 to 'compareinstances' (Instance expected, got " .. typeof(b) .. ')', 2)
-	if clonerefs[a] then
+	while clonerefs[a] do
 		a = clonerefs[a]
 	end
-	if clonerefs[b] then
+	while clonerefs[b] do
 		b = clonerefs[b]
 	end
 	return a == b
@@ -2749,16 +2795,103 @@ getactors = function()
 	return result
 end
 
+local parallel_threads = setmetatable({}, {__mode = 'k'})
+
+local raw_task = task
+local wrapped_task = {}
+for k, v in pairs(raw_task) do
+	wrapped_task[k] = v
+end
+wrapped_task.desynchronize = function(...)
+	parallel_threads[coroutine.running()] = true
+	if raw_task.desynchronize then
+		return raw_task.desynchronize(...)
+	end
+end
+wrapped_task.synchronize = function(...)
+	parallel_threads[coroutine.running()] = nil
+	if raw_task.synchronize then
+		return raw_task.synchronize(...)
+	end
+end
+task = wrapped_task
+pcall(function()
+	getgenv().task = wrapped_task
+end)
+
+local parallel_canary = nil
+pcall(function()
+	parallel_canary = Instance.new("Folder")
+	parallel_canary.Name = "__fapi_par"
+	local ws = game:GetService("Workspace") or workspace
+	if ws then
+		parallel_canary.Parent = ws
+	end
+end)
+
 isparallel = function()
+	local thread = coroutine.running()
+	if parallel_threads[thread] then
+		return true
+	end
+	if parallel_canary and parallel_canary.Parent then
+		local ok, _ = pcall(function()
+			parallel_canary.Name = parallel_canary.Name
+		end)
+		if not ok then
+			return true
+		end
+	else
+		local ws = workspace or game:FindFirstChildOfClass("Workspace")
+		if ws then
+			local ok, _ = pcall(function()
+				ws.Name = ws.Name
+			end)
+			if not ok then
+				return true
+			end
+		end
+	end
 	return false
 end
 
-run_on_actor = function(actor, source, ...)
-	local args = table.pack(...)
+is_parallel = isparallel
+checkparallel = isparallel
 
-	local function executeOnActor(a, s)
+run_on_actor = function(actor, source, ...)
+	local raw_args = table.pack(...)
+
+	local function cloneValue(value, seen)
+		if type(value) ~= 'table' then
+			return value
+		end
+
+		seen = seen or {}
+		if seen[value] then
+			return seen[value]
+		end
+
+		local clone = {}
+		seen[value] = clone
+		for key, item in pairs(value) do
+			clone[cloneValue(key, seen)] = cloneValue(item, seen)
+		end
+		return clone
+	end
+
+	local actorArgs = table.pack(table.unpack(raw_args, 1, raw_args.n))
+	for index = 1, actorArgs.n do
+		actorArgs[index] = cloneValue(actorArgs[index])
+	end
+
+	local function executeOnActor(a, s, args)
 		local func, err = loadstring(s)
 		if func then
+			local env = getfenv(func)
+			if type(env) == 'table' then
+				env.actor = a
+				env.script = a
+			end
 			local ok, run_err = pcall(func, table.unpack(args, 1, args.n))
 			if not ok then
 				warn('FunnyExecutor -- run_on_actor: ' .. tostring(run_err))
@@ -2768,54 +2901,138 @@ run_on_actor = function(actor, source, ...)
 		end
 	end
 
+	local actors = {}
 	if type(actor) == 'table' then
 		for _, a in actor do
-			if typeof(a) ~= 'Instance' then
-				warn('FunnyExecutor -- run_on_actor: invalid actor in table (Actor expected, got ' .. typeof(a) .. ')')
-				continue
-			end
-			if type(source) == 'table' then
-				for _, s in source do
-					task.spawn(executeOnActor, a, tostring(s))
-				end
+			if typeof(a) == 'Instance' then
+				actors[#actors + 1] = a
 			else
-				task.spawn(executeOnActor, a, source)
+				warn('FunnyExecutor -- run_on_actor: invalid actor in table (Actor expected, got ' .. typeof(a) .. ')')
 			end
 		end
 	elseif typeof(actor) == 'Instance' then
-		if type(source) == 'table' then
-			for _, s in source do
-				task.spawn(executeOnActor, actor, tostring(s))
-			end
-		else
-			task.spawn(executeOnActor, actor, source)
-		end
+		actors[#actors + 1] = actor
 	else
 		error("invalid argument #1 to 'run_on_actor' (Actor or table expected, got " .. typeof(actor) .. ')', 2)
+	end
+
+	local sources = {}
+	if type(source) == 'table' then
+		for _, s in source do
+			sources[#sources + 1] = tostring(s)
+		end
+	else
+		sources[#sources + 1] = tostring(source)
+	end
+
+	for _, a in ipairs(actors) do
+		for _, s in ipairs(sources) do
+			task.spawn(executeOnActor, a, s, actorArgs)
+		end
 	end
 end
 
 local comm_channels = {}
 local comm_counter = 0
 
+local function create_channel_object()
+	local connections = {}
+	local channel = {}
+
+	local connection_mt = {
+		__index = {
+			Disconnect = function(self)
+				self.Connected = false
+				connections[self] = nil
+			end,
+			disconnect = function(self)
+				self.Connected = false
+				connections[self] = nil
+			end,
+		}
+	}
+
+	local function add_connection(fn, is_once)
+		local conn = setmetatable({
+			Connected = true,
+			_fn = fn,
+			_once = is_once,
+		}, connection_mt)
+		connections[conn] = conn
+		return conn
+	end
+
+	local function fire_all(...)
+		local args = table.pack(...)
+		local list = {}
+		for conn in pairs(connections) do
+			if conn.Connected then
+				list[#list + 1] = conn
+				if conn._once then
+					conn.Connected = false
+					connections[conn] = nil
+				end
+			end
+		end
+		for _, conn in ipairs(list) do
+			if conn._fn then
+				task.spawn(conn._fn, table.unpack(args, 1, args.n))
+			end
+		end
+	end
+
+	function channel.Connect(self, fn)
+		if self ~= channel and type(self) == "function" then
+			fn = self
+		end
+		return add_connection(fn, false)
+	end
+	channel.connect = channel.Connect
+
+	function channel.Once(self, fn)
+		if self ~= channel and type(self) == "function" then
+			fn = self
+		end
+		return add_connection(fn, true)
+	end
+	channel.once = channel.Once
+
+	function channel.Wait(self)
+		local running = coroutine.running()
+		add_connection(function(...)
+			task.spawn(running, ...)
+		end, true)
+		return coroutine.yield()
+	end
+	channel.wait = channel.Wait
+
+	function channel.Fire(self, ...)
+		if self == channel then
+			fire_all(...)
+		else
+			fire_all(self, ...)
+		end
+	end
+	channel.fire = channel.Fire
+
+	channel.Event = channel
+	channel.event = channel
+
+	return channel
+end
+
 local function make_comm_channel()
 	comm_counter += 1
-	local bindable = Instance.new('BindableEvent')
-	local object = {
-		Event = bindable.Event,
-		Fire = function(_, ...)
-			bindable:Fire(...)
-		end,
-	}
-	comm_channels[comm_counter] = object
-	return comm_counter, object
+	local channel = create_channel_object()
+	comm_channels[comm_counter] = channel
+	return comm_counter, channel
 end
 
 create_comm_channel = make_comm_channel
 
 get_comm_channel = function(id)
-	assert(type(id) == 'number', "invalid argument #1 to 'get_comm_channel' (number expected, got " .. type(id) .. ')', 2)
-	return comm_channels[id]
+	local num_id = tonumber(id) or id
+	return comm_channels[num_id] or comm_channels[id]
 end
 
 get_hidden_gui = gethui
