@@ -1242,24 +1242,11 @@ debug.getstack = function(level, index)
 	if not frame then return nil end
 
 	if index then
-		-- map index through locallist if available
-		local locallist = frame.proto.locallist
-		if locallist and locallist[index] then
-			return frame.stack[locallist[index].reg]
-		end
-		-- fiu VM uses 0-indexed registers, convert from 1-based user index
 		return frame.stack[index - 1]
 	else
 		local result = {}
-		local locallist = frame.proto.locallist
-		if locallist then
-			for i = 1, #locallist do
-				result[i] = frame.stack[locallist[i].reg]
-			end
-		else
-			for i = 1, frame.proto.maxstacksize do
-				result[i] = frame.stack[i - 1]
-			end
+		for i = 0, frame.proto.maxstacksize - 1 do
+			result[i + 1] = frame.stack[i]
 		end
 		return result
 	end
@@ -1275,14 +1262,7 @@ debug.setstack = function(level, index, value)
 
 	local frame = csi.stack[target]
 	if frame then
-		-- map index through locallist if available
-		local locallist = frame.proto.locallist
-		if locallist and locallist[index] then
-			frame.stack[locallist[index].reg] = value
-		else
-			-- fiu VM uses 0-indexed registers, convert from 1-based user index
-			frame.stack[index - 1] = value
-		end
+		frame.stack[index - 1] = value
 	end
 end
 
