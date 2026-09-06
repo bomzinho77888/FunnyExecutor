@@ -16,20 +16,16 @@ class LuauHighlighter(QSyntaxHighlighter):
         keywords = [
             "and", "break", "do", "else", "elseif", "end",
             "for", "function", "if", "in", "local", "nil", "not",
-            "or", "repeat", "return", "then" "until", "while",
+            "or", "repeat", "return", "then", "until", "while",
             "continue", "export", "const"
         ]
-        for word in keywords:
-            pattern = QRegularExpression(f"\\b{word}\\b")
-            self.rules.append((pattern, keyword_format))
+        self.rules.append((QRegularExpression(r"\b(?:" + "|".join(keywords) + r")\b"), keyword_format))
 
         # booleans
         bool_format = QTextCharFormat()
         bool_format.setForeground(QColor("#f2ba2a"))
         bool_format.setFontWeight(bold_font)
-        for word in ['true', 'false']:
-            pattern = QRegularExpression(f"\\b{word}\\b")
-            self.rules.append((pattern, bool_format))
+        self.rules.append((QRegularExpression(r"\b(?:true|false)\b"), bool_format))
 
         # globals
         globals_format = QTextCharFormat()
@@ -40,9 +36,7 @@ class LuauHighlighter(QSyntaxHighlighter):
             '_G', 'shared', 'game', 'workspace', 'warn', 'pairs', 'ipairs', 'next',
             'select', 'assert', 'require'
         ]
-        for word in globals_keywords:
-            pattern = QRegularExpression(f"\\b{word}\\b")
-            self.rules.append((pattern, globals_format))
+        self.rules.append((QRegularExpression(r"\b(?:" + "|".join(globals_keywords) + r")\b"), globals_format))
 
         # unc
         unc_format = QTextCharFormat()
@@ -59,7 +53,7 @@ class LuauHighlighter(QSyntaxHighlighter):
             'clonefunction', 'isexecutorclosure', 'checkclosure', 'gethui',
             'getnilinstances', 'getloadedmodules', 'getscripts',
             'getrunningscripts', 'isreadonly', 'queue_on_teleport',
-            'getnamecallmethod', 'http_request', 'crypt', 'hash', 'messagebox',
+            'getnamecallmethod', 'http_request', 'hash',
             'mouse1click', 'mouse2click', 'mouse1press', 'mouse1release',
             'mouse2press', 'mouse2release', 'movemouse', 'mousemoveabs',
             'mouserel', 'mousemoverel', 'getmousepos', 'getmouselocation',
@@ -67,9 +61,7 @@ class LuauHighlighter(QSyntaxHighlighter):
             'getscriptbytecode', 'dumpstring', 'getscripthash', 'Drawing',
             'isrenderavailable', 'getrenderproperty', 'setrenderproperty'
         ]
-        for word in unc_keywords:
-            pattern = QRegularExpression(f"\\b{word}\\b")
-            self.rules.append((pattern, unc_format))
+        self.rules.append((QRegularExpression(r"\b(?:" + "|".join(unc_keywords) + r")\b"), unc_format))
 
         # numbers
         number_format = QTextCharFormat()
@@ -93,8 +85,8 @@ class LuauHighlighter(QSyntaxHighlighter):
         self.rules.append((call_pattern, function_format))
 
         # func defs
-        def_pattern = QRegularExpression(r"(?<=\bfunction\s+)[a-zA-Z_][a-zA-Z0-9_]*\b")
-        self.rules.append((def_pattern, function_format))
+        def_pattern = QRegularExpression(r"\bfunction\s+([a-zA-Z_][a-zA-Z0-9_]*)\b")
+        self.rules.append((def_pattern, function_format, 1))
 
         # strings
         string_format = QTextCharFormat()
@@ -109,14 +101,19 @@ class LuauHighlighter(QSyntaxHighlighter):
         self.rules.append((QRegularExpression("--[^\n]*"), comment_format))
 
     def highlightBlock(self, text):
-        for pattern, fmt in self.rules:
+        if not text:
+            return
+        for rule in self.rules:
+            pattern = rule[0]
+            fmt = rule[1]
+            group = rule[2] if len(rule) > 2 else 0
             match_iterator = pattern.globalMatch(text)
             while match_iterator.hasNext():
                 match = match_iterator.next()
-                self.setFormat(match.capturedStart(), match.capturedLength(), fmt)
+                self.setFormat(match.capturedStart(group), match.capturedLength(group), fmt)
 
 class CodeEditor(QPlainTextEdit):
-    def __init__(self):
+    def __init__(self, content=None):
         super().__init__()
 
         self.setObjectName(u"codeEditor")
@@ -128,8 +125,12 @@ class CodeEditor(QPlainTextEdit):
         font1.setPointSize(12)
         self.setFont(font1)
 
-        LuauHighlighter(self.document())
-        self.setPlainText('-- funnyexecutor by funnyfreak228\nprint("Welcome to Funnyexecutor!")')
+        if content is not None:
+            self.setPlainText(content)
+        else:
+            self.setPlainText('-- funnyexecutor by funnyfreak228\nprint("Welcome to Funnyexecutor!")')
+
+        self.highlighter = LuauHighlighter(self.document())
 
 def msgb(icon, title, text, buttons):
     msg = QMessageBox()

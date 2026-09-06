@@ -169,9 +169,7 @@ class Window(QMainWindow, Ui_MainWindow):
             self._add_tab("Script #1")
 
     def _add_tab(self, name=None, content=None):
-        editor = CodeEditor()
-        if content is not None:
-            editor.setPlainText(content)
+        editor = CodeEditor(content=content)
         if name is None:
             self._tab_number += 1
             name = f'Script #{self._tab_number}'
