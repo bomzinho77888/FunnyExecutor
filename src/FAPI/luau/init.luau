@@ -2317,20 +2317,6 @@ local function all_known_instances()
 	return result
 end
 
-local real_Instance = Instance
-Instance = setmetatable({
-	new = function(class, parent)
-		local inst = real_Instance.new(class)
-		register_instance(inst)
-		if parent ~= nil then
-			pcall(function()
-				inst.Parent = parent
-			end)
-		end
-		return inst
-	end,
-}, {__index = real_Instance})
-
 game.DescendantAdded:Connect(register_instance)
 
 getinstances = function()
@@ -2709,14 +2695,6 @@ function Signal.new()
 end
 
 local signal_records = setmetatable({}, {__mode = 'k'})
-local instance_proxies = setmetatable({}, {__mode = 'k'})
-local proxy_instances = setmetatable({}, {__mode = 'k'})
-local raw_instance_new = Instance.new
-local signal_proxy_enabled = false
-
-local function unwrap_instance(value)
-	return proxy_instances[value] or value
-end
 
 local function make_connection(record, callback)
 	local entry = {
@@ -2802,58 +2780,6 @@ local function wrap_signal(raw_signal, event_name, parent)
 	return proxy
 end
 
-local function wrap_instance(instance)
-	if instance_proxies[instance] then
-		return instance_proxies[instance]
-	end
-
-	local proxy = {}
-	instance_proxies[instance] = proxy
-	proxy_instances[proxy] = instance
-	setmetatable(proxy, {
-		__index = function(_, key)
-			if key == 'Event' and instance:IsA('BindableEvent') then
-				return wrap_signal(instance.Event, 'Event', proxy)
-			elseif key == 'Touched' and instance:IsA('BasePart') then
-				return wrap_signal(instance.Touched, 'Touched', proxy)
-			end
-			local value = instance[key]
-			if type(value) == 'function' then
-				return function(_, ...)
-					local args = table.pack(...)
-					for index = 1, args.n do args[index] = unwrap_instance(args[index]) end
-					local result = value(instance, table.unpack(args, 1, args.n))
-					if typeof(result) == 'Instance' then return wrap_instance(result) end
-					return result
-				end
-			end
-			return value
-		end,
-		__newindex = function(_, key, value)
-			instance[key] = unwrap_instance(value)
-		end,
-		__tostring = function() return tostring(instance) end,
-	})
-	return proxy
-end
-
-local raw_instance = Instance
-Instance = setmetatable({}, {
-	__index = raw_instance,
-	__newindex = function(_, key, value) raw_instance[key] = value end,
-})
-Instance.new = function(class_name, parent)
-	local instance = raw_instance_new(class_name, unwrap_instance(parent))
-	if signal_proxy_enabled and (class_name == 'BindableEvent' or class_name == 'Part') then
-		return wrap_instance(instance)
-	end
-	return instance
-end
-
-task.delay(2, function()
-	signal_proxy_enabled = true
-end)
-
 getconnections = function(signal)
 	local record = signal_records[signal]
 	assert(record, "invalid argument #1 to 'getconnections' (RBXScriptSignal expected)", 2)
@@ -2869,10 +2795,8 @@ end
 firesignal = function(signal, ...)
 	local record = signal_records[signal]
 	assert(record, "invalid argument #1 to 'firesignal' (RBXScriptSignal expected)", 2)
-	record.parent = record.parent or nil
-	record.parent_raw = unwrap_instance(record.parent)
-	if record.parent_raw and record.parent_raw:IsA('BindableEvent') then
-		record.parent_raw:Fire(...)
+	if record.parent and record.parent:IsA('BindableEvent') then
+		record.parent:Fire(...)
 	else
 		record.raw_signal:Fire(...)
 	end
