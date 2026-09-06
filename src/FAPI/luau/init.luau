@@ -864,7 +864,10 @@ crypt.encrypt = function(data, key, initVector, mode)
 		plain[#plain + 1] = pad
 	end
 
-	local cipher = AES.encrypt_CBC(keyBytes, plain, ivBytes)
+	local ivCopy = {}
+	for i = 1, 16 do ivCopy[i] = ivBytes[i] end
+
+	local cipher = AES.encrypt_CBC(keyBytes, plain, ivCopy)
 	return base64encode(AES.to_string(cipher)), base64encode(AES.to_string(ivBytes))
 end
 
