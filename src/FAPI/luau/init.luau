@@ -971,6 +971,261 @@ debug.info = function(f, what)
 	return real_debug_info(f, what)
 end
 
+-- // debug library: helpers to resolve functions from the fiu closure registry
+local function _resolve_func(f)
+	if type(f) == 'function' then
+		return f
+	elseif type(f) == 'number' then
+		local ok, func = pcall(real_debug_info, f + 1, 'f')
+		return ok and func or nil
+	end
+	return nil
+end
+
+local function _get_debug_info(f)
+	local fn = _resolve_func(f)
+	if not fn then return nil end
+	local reg = _fiu_closure_debug_registry
+	if reg then
+		local info = rawget(reg, fn)
+		if info then return info end
+	end
+	return nil
+end
+
+debug.getinfo = function(f, options)
+	options = options or 'sl'
+	local fn = _resolve_func(f)
+	if not fn then return nil end
+
+	local info = {}
+	local dbi = _get_debug_info(fn)
+	local proto = dbi and dbi.proto
+
+	local ok_src, src_val = pcall(real_debug_info, fn, 's')
+	info.source = if ok_src then src_val else nil
+	if not info.source and proto then
+		info.source = '=' .. (proto.debugname or 'unknown')
+	end
+	info.short_src = info.source or ''
+
+	local ok_line, line_val = pcall(real_debug_info, fn, 'l')
+	info.currentline = if ok_line and line_val then line_val else -1
+
+	local ok_name, name_val = pcall(real_debug_info, fn, 'n')
+	info.name = if ok_name and name_val then name_val else (proto and proto.debugname) or ''
+	info.namewhat = info.name ~= '' and 'global' or ''
+
+	info.func = fn
+
+	local ok_nups, nups_val = pcall(real_debug_info, fn, 'r')
+	info.nups = if ok_nups and nups_val then nups_val else (proto and proto.nups) or 0
+
+	local ok_np, np_val, va_val = pcall(real_debug_info, fn, 'a')
+	if ok_np and np_val then
+		info.numparams = np_val
+		info.is_vararg = va_val or 0
+	elseif proto then
+		info.numparams = proto.numparams
+		info.is_vararg = proto.isvararg and 1 or 0
+	else
+		info.numparams = 0
+		info.is_vararg = 0
+	end
+
+	local src = info.source or ''
+	info.what = if src:sub(1, 1) == '@' then 'Lua' elseif src == '=[C]' then 'C' else 'main'
+
+	return info
+end
+
+debug.getconstant = function(f, index)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstant' (function expected)", 2) end
+	return dbi.proto.k[index]
+end
+
+debug.getconstants = function(f)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstants' (function expected)", 2) end
+	local result = {}
+	local k = dbi.proto.k
+	for i = 1, #k do
+		result[i] = k[i]
+	end
+	return result
+end
+
+debug.setconstant = function(f, index, value)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.proto then error("bad argument #1 to 'setconstant' (function expected)", 2) end
+	dbi.proto.k[index] = value
+end
+
+debug.getupvalue = function(f, index)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.upvals then error("bad argument #1 to 'getupvalue' (function expected)", 2) end
+	local uv = dbi.upvals[index]
+	if not uv then return nil end
+	local name = dbi.proto.upvaluenamelist and dbi.proto.upvaluenamelist[index]
+	if uv.index == "value" then
+		return name, uv.value
+	else
+		return name, uv.store[uv.index]
+	end
+end
+
+debug.getupvalues = function(f)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.upvals then error("bad argument #1 to 'getupvalues' (function expected)", 2) end
+	local result = {}
+	for i = 1, #dbi.upvals do
+		local uv = dbi.upvals[i]
+		if uv.index == "value" then
+			result[i] = uv.value
+		else
+			result[i] = uv.store[uv.index]
+		end
+	end
+	return result
+end
+
+debug.setupvalue = function(f, index, value)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.upvals then error("bad argument #1 to 'setupvalue' (function expected)", 2) end
+	local uv = dbi.upvals[index]
+	if not uv then return nil end
+	local name = dbi.proto.upvaluenamelist and dbi.proto.upvaluenamelist[index]
+	if uv.index == "value" then
+		uv.value = value
+	else
+		uv.store[uv.index] = value
+	end
+	return name
+end
+
+debug.getproto = function(f, index, active)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.proto then error("bad argument #1 to 'getproto' (function expected)", 2) end
+	local protos = dbi.proto.protos
+	local module = dbi.module
+	local wrapclosure = dbi.wrapclosure
+	if not protos or not module then return nil end
+
+	if active then
+		-- return wrapped closures (instantiated with upvalues)
+		local result = {}
+		for i = 1, #protos do
+			local pid = protos[i]
+			local childProto = module.protoList[pid]
+			if childProto then
+				local nups = childProto.nups
+				local upvalues = table.create(nups)
+				for j = 1, nups do
+					local uv = { value = nil, index = "value" }
+					uv.store = uv
+					upvalues[j] = uv
+				end
+				result[i] = wrapclosure(module, childProto, upvalues)
+			end
+		end
+		return result[index]
+	else
+		-- return unwrapped proto function
+		local pid = protos[index]
+		if not pid then return nil end
+		local childProto = module.protoList[pid]
+		if not childProto then return nil end
+		local nups = childProto.nups
+		local upvalues = table.create(nups)
+		for j = 1, nups do
+			local uv = { value = nil, index = "value" }
+			uv.store = uv
+			upvalues[j] = uv
+		end
+		return wrapclosure(module, childProto, upvalues)
+	end
+end
+
+debug.getprotos = function(f)
+	local dbi = _get_debug_info(f)
+	if not dbi or not dbi.proto then error("bad argument #1 to 'getprotos' (function expected)", 2) end
+	local protos = dbi.proto.protos
+	local module = dbi.module
+	local wrapclosure = dbi.wrapclosure
+	if not protos or not module then return {} end
+	local result = {}
+	for i = 1, #protos do
+		local pid = protos[i]
+		local childProto = module.protoList[pid]
+		if childProto then
+			local nups = childProto.nups
+			local upvalues = table.create(nups)
+			for j = 1, nups do
+				local uv = { value = nil, index = "value" }
+				uv.store = uv
+				upvalues[j] = uv
+			end
+			result[i] = wrapclosure(module, childProto, upvalues)
+		end
+	end
+	return result
+end
+
+debug.getstack = function(level, index)
+	local csi = _fiu_call_stack_info
+	if not csi then return nil end
+
+	-- level 1 = current function, level 2 = caller, etc.
+	-- call_stack is 1-indexed, last element is the deepest (current)
+	local target = csi.n - level + 1
+	if target < 1 or target > csi.n then return nil end
+
+	local frame = csi.stack[target]
+	if not frame then return nil end
+
+	if index then
+		-- map index through locallist if available
+		local locallist = frame.proto.locallist
+		if locallist and locallist[index] then
+			return frame.stack[locallist[index].reg]
+		end
+		return frame.stack[index]
+	else
+		local result = {}
+		local locallist = frame.proto.locallist
+		if locallist then
+			for i = 1, #locallist do
+				result[i] = frame.stack[locallist[i].reg]
+			end
+		else
+			for i = 1, frame.proto.maxstacksize do
+				result[i] = frame.stack[i]
+			end
+		end
+		return result
+	end
+end
+
+debug.setstack = function(level, index, value)
+	local csi = _fiu_call_stack_info
+	if not csi then return end
+
+	local target = csi.n - level + 1
+	if target < 1 or target > csi.n then return end
+
+	local frame = csi.stack[target]
+	if frame then
+		-- map index through locallist if available
+		local locallist = frame.proto.locallist
+		if locallist and locallist[index] then
+			frame.stack[locallist[index].reg] = value
+		else
+			frame.stack[index] = value
+		end
+	end
+end
+
 loadstring = function(source, chunkname)
 	if chunkname then
 		chunkname = tostring(chunkname):gsub('^[@=]', '')

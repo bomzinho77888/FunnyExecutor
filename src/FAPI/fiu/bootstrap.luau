@@ -110,7 +110,11 @@ load_bytecode = function(bytecode, env)
 	settings.useNativeNamecall = true
 	settings.namecallHandler = namecall_handler
 
-	return (fiu.luau_load(bytecode, env or getfenv(), settings))
+	local func, close, mod, cdebugreg, cstackinfo = fiu.luau_load(bytecode, env or getfenv(), settings)
+	_fiu_module = mod
+	_fiu_closure_debug_registry = cdebugreg
+	_fiu_call_stack_info = cstackinfo
+	return func
 end
 
 task.spawn(function()
