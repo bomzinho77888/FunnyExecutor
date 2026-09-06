@@ -196,6 +196,14 @@ local function luau_validatesettings(luau_settings)
 	assert(type(luau_settings.cooperativeYieldBudget) == "number", "luau_settings.cooperativeYieldBudget should be a number")
 end
 
+-- // debug closure registry: maps closures to their internal {proto, upvals, module, stack, debugging}
+-- weak-keyed so closures can be GC'd when no longer referenced
+local closure_debug_registry = setmetatable({}, { __mode = "k" })
+
+-- // call stack tracker: shared table with {stack = array, n = count}
+-- each call to wrapped pushes a frame, pops when done
+local call_stack_info = { stack = {}, n = 0 }
+
 local function getmaxline(module, protoid)
 	local proto = if (protoid == nil) then module.mainProto else module.protoList[protoid]
 	local size = -1
@@ -586,17 +594,26 @@ local function luau_deserialize(bytecode, luau_settings)
 		end
 
 		-- // debuginfo
+		local locallist = {}
+		local upvaluenamelist = {}
 		if readByte() ~= 0 then
 			local sizel = readVarInt()
 			for i = 1, sizel do
-				readVarInt()
-				readVarInt()
-				readVarInt()
-				readByte()
+				local nameindex = readVarInt()
+				local startpc = readVarInt()
+				local endpc = readVarInt()
+				local reg = readByte()
+				locallist[i] = {
+					name = if nameindex ~= 0 then stringList[nameindex] else "?",
+					startpc = startpc,
+					endpc = endpc,
+					reg = reg,
+				}
 			end
 			local sizeupvalues = readVarInt()
 			for i = 1, sizeupvalues do
-				readVarInt()
+				local nameindex = readVarInt()
+				upvaluenamelist[i] = if nameindex ~= 0 then stringList[nameindex] else "?"
 			end
 		end
 
@@ -622,6 +639,9 @@ local function luau_deserialize(bytecode, luau_settings)
 			instructionlineinfo = instructionlineinfo;
 
 			bytecodeid = bytecodeid;
+
+			locallist = locallist;
+			upvaluenamelist = upvaluenamelist;
 		}
 	end
 	
@@ -1406,12 +1426,27 @@ local function luau_load(module, env, luau_settings)
 			passed = nil
 
 			local debugging = {pc = 0, name = "NONE"}
+
+			-- push frame onto call stack for debug.getstack
+			call_stack_info.n += 1
+			call_stack_info.stack[call_stack_info.n] = {
+				stack = stack,
+				proto = proto,
+				module = module,
+				upvals = upvals,
+				debugging = debugging,
+			}
+
 			local result
 			if luau_settings.errorHandling then 
 				result = table_pack(pcall(luau_execute, debugging, stack, proto.protos, proto.code, varargs))
 			else
 				result = table_pack(true, luau_execute(debugging, stack, proto.protos, proto.code, varargs))
 			end
+
+			-- pop frame from call stack
+			call_stack_info.stack[call_stack_info.n] = nil
+			call_stack_info.n -= 1
 
 			if result[1] then
 				return table_unpack(result, 2, result.n)
@@ -1438,14 +1473,25 @@ local function luau_load(module, env, luau_settings)
 			end
 		end
 
+		local result_func
 		if luau_settings.errorHandling then 
-			return wrapped
+			result_func = wrapped
 		else 
-			return luau_execute
-		end 
+			result_func = luau_execute
+		end
+
+		-- register closure for debug introspection
+		closure_debug_registry[result_func] = {
+			proto = proto,
+			upvals = upvals,
+			module = module,
+			wrapclosure = luau_wrapclosure,
+		}
+
+		return result_func
 	end
 
-	return luau_wrapclosure(module, mainProto),  luau_close
+	return luau_wrapclosure(module, mainProto),  luau_close, module, closure_debug_registry, call_stack_info
 end
 
 return {
@@ -1570,7 +1616,11 @@ load_bytecode = function(bytecode, env)
 	settings.useNativeNamecall = true
 	settings.namecallHandler = namecall_handler
 
-	return (fiu.luau_load(bytecode, env or getfenv(), settings))
+	local func, close, mod, cdebugreg, cstackinfo = fiu.luau_load(bytecode, env or getfenv(), settings)
+	_fiu_module = mod
+	_fiu_closure_debug_registry = cdebugreg
+	_fiu_call_stack_info = cstackinfo
+	return func
 end
 
 task.spawn(function()
