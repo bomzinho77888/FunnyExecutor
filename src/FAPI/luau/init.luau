@@ -387,13 +387,18 @@ getgenv = function()
 end
 
 do
-	local env = _fiu_env_ref or getfenv()
-	local meta = getmetatable(env)
-	if type(meta) ~= 'table' then
-		meta = {}
-	end
-	meta.__index = genv_table
-	setmetatable(env, meta)
+	local real_env = _fiu_env_ref or getfenv()
+	local wrapper = setmetatable({}, {
+		__index = function(_, k)
+			local v = rawget(genv_table, k)
+			if v ~= nil then return v end
+			return real_env[k]
+		end,
+		__newindex = function(_, k, v)
+			rawset(real_env, k, v)
+		end,
+	})
+	_fiu_env_ref = wrapper
 end
 
 local renv_table = {
@@ -2233,9 +2238,6 @@ local function is_client_script(inst)
 	local ok, res = pcall(function()
 		if inst:IsA('LocalScript') or inst:IsA('ModuleScript') then
 			return true
-		end
-		if inst.ClassName == 'Script' then
-			return inst.RunContext == Enum.RunContext.Client
 		end
 		return false
 	end)
