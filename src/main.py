@@ -2,9 +2,6 @@ import json
 import os.path
 import shutil
 import sys
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from datetime import datetime
 
 from design import Ui_MainWindow
 
@@ -20,59 +17,6 @@ import FAPI
 
 executor: FAPI.Executor | None = None
 sdk: FAPI.sdk.Roblox | None = None
-
-LOG_HOST = "127.0.0.1"
-LOG_PORT = 3000
-_log_buffer = []
-_log_lock = threading.Lock()
-
-
-class LogHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != "/log":
-            self.send_response(404)
-            self.end_headers()
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length)
-            data = json.loads(raw.decode("utf-8"))
-            with _log_lock:
-                _log_buffer.append({
-                    "message": str(data.get("message", "")),
-                    "type": str(data.get("type", "Unknown")),
-                    "timestamp": data.get("timestamp"),
-                })
-            self.send_response(204)
-            self.end_headers()
-        except Exception:
-            self.send_response(400)
-            self.end_headers()
-
-    def do_GET(self):
-        if self.path == "/health":
-            body = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def log_message(self, *_):
-        pass
-
-
-def _start_log_server():
-    try:
-        server = ThreadingHTTPServer((LOG_HOST, LOG_PORT), LogHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
-        return True
-    except OSError:
-        return False
 
 
 def load_exec():
@@ -98,8 +42,6 @@ class Window(QMainWindow, Ui_MainWindow):
         self._warned = False
         self._console_visible = False
         self._log_count = 0
-
-        self._setup_console()
 
         def inject():
             try:
@@ -208,137 +150,6 @@ class Window(QMainWindow, Ui_MainWindow):
         timer_autosave = QTimer(self)
         timer_autosave.timeout.connect(self._save_tabs)
         timer_autosave.start(10000)
-
-        timer_poll = QTimer(self)
-        timer_poll.timeout.connect(self._poll_logs)
-        timer_poll.start(100)
-
-    def _setup_console(self):
-        self.consoleToggleButton = QPushButton("Console", self.centralwidget)
-        self.consoleToggleButton.setObjectName("consoleToggleButton")
-        self.consoleToggleButton.setGeometry(QRect(270, 500, 81, 26))
-        self.consoleToggleButton.clicked.connect(self._toggle_console)
-
-        self.consolePanel = QWidget(self.centralwidget)
-        self.consolePanel.setObjectName("consolePanel")
-        self.consolePanel.setGeometry(QRect(10, 35, 821, 200))
-        self.consolePanel.hide()
-
-        layout = QVBoxLayout(self.consolePanel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        toolbar = QFrame()
-        toolbar.setFixedHeight(32)
-        toolbar.setStyleSheet("background-color: #101318; border-bottom: 1px solid #1a1d24;")
-        toolbar_layout = QHBoxLayout(toolbar)
-        toolbar_layout.setContentsMargins(8, 0, 8, 0)
-
-        server_ok = _start_log_server()
-        status_text = f"●  localhost:{LOG_PORT}" if server_ok else f"●  porta {LOG_PORT} ocupada"
-        status_color = "#48d597" if server_ok else "#ef6b73"
-        self.serverStatusLabel = QLabel(status_text)
-        self.serverStatusLabel.setStyleSheet(f"color: {status_color}; font-size: 10px; background: transparent;")
-        toolbar_layout.addWidget(self.serverStatusLabel)
-
-        self.logCountLabel = QLabel("0 logs")
-        self.logCountLabel.setStyleSheet("color: #68717d; font-size: 10px; background: transparent;")
-        toolbar_layout.addWidget(self.logCountLabel)
-
-        toolbar_layout.addStretch()
-
-        clearBtn = QPushButton("Limpar")
-        clearBtn.setFixedSize(60, 22)
-        clearBtn.setStyleSheet(
-            "QPushButton { background: #181c22; color: #cbd1d9; border: none; border-radius: 3px; font-size: 10px; }"
-            "QPushButton:hover { background: #222832; }"
-        )
-        clearBtn.clicked.connect(self._clear_logs)
-        toolbar_layout.addWidget(clearBtn)
-
-        copyBtn = QPushButton("Copiar")
-        copyBtn.setFixedSize(60, 22)
-        copyBtn.setStyleSheet(
-            "QPushButton { background: #181c22; color: #cbd1d9; border: none; border-radius: 3px; font-size: 10px; }"
-            "QPushButton:hover { background: #222832; }"
-        )
-        copyBtn.clicked.connect(self._copy_logs)
-        toolbar_layout.addWidget(copyBtn)
-
-        layout.addWidget(toolbar)
-
-        self.consoleText = QTextEdit()
-        self.consoleText.setReadOnly(True)
-        self.consoleText.setStyleSheet(
-            "QTextEdit { background-color: #0b0d10; color: #d7dce2; border: none;"
-            "font-family: Consolas; font-size: 11px; padding: 8px; }"
-        )
-        layout.addWidget(self.consoleText)
-
-    def _poll_logs(self):
-        with _log_lock:
-            logs = list(_log_buffer)
-            _log_buffer.clear()
-        for log in logs:
-            self._log_count += 1
-            self._display_log(log["message"], log["type"], log.get("timestamp"))
-            self.logCountLabel.setText(f"{self._log_count} log{'s' if self._log_count != 1 else ''}")
-
-    def _display_log(self, message, log_type, timestamp=None):
-        if timestamp:
-            try:
-                ts = float(timestamp)
-                if ts > 1e12:
-                    ts = ts / 1000
-                time_text = datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-            except Exception:
-                time_text = datetime.now().strftime("%H:%M:%S")
-        else:
-            time_text = datetime.now().strftime("%H:%M:%S")
-
-        typ = self._normalize_type(log_type)
-
-        color = "#8fa1b5"
-        if typ == "WARN":
-            color = "#e8c56b"
-        elif typ == "ERROR":
-            color = "#f07878"
-
-        self.consoleText.append(
-            f'<span style="color:#59616c;">[{time_text}]</span> '
-            f'<span style="color:{color};">{typ:&lt;8}</span> '
-            f'<span style="color:#d7dce2;">{message}</span>'
-        )
-        self.consoleText.moveCursor(QTextCursor.MoveOperation.End)
-
-    @staticmethod
-    def _normalize_type(value):
-        value = str(value)
-        if "Warning" in value:
-            return "WARN"
-        if "Error" in value:
-            return "ERROR"
-        if "Output" in value:
-            return "OUTPUT"
-        return value.upper()
-
-    def _clear_logs(self):
-        self._log_count = 0
-        self.consoleText.clear()
-        self.logCountLabel.setText("0 logs")
-
-    def _copy_logs(self):
-        content = self.consoleText.toPlainText()
-        QApplication.clipboard().setText(content)
-
-    def _toggle_console(self):
-        self._console_visible = not self._console_visible
-        if self._console_visible:
-            self.consolePanel.show()
-            self.tabWidget.setGeometry(10, 240, 821, 251)
-        else:
-            self.consolePanel.hide()
-            self.tabWidget.setGeometry(10, 35, 821, 456)
 
     def _save_tabs(self):
         data = [self._tab_number]
