@@ -848,19 +848,15 @@ crypt.encrypt = function(data, key, initVector, mode)
 
 	local ivBytes
 	if initVector ~= nil then
-		ivBytes = AES.to_bytes(base64decode(initVector))
-		if #ivBytes > 16 then
-			local truncated = {}
-			for i = 1, 16 do truncated[i] = ivBytes[i] end
-			ivBytes = truncated
-		end
+		local raw = AES.to_bytes(base64decode(initVector))
+		ivBytes = {}
+		for i = 1, 16 do ivBytes[i] = raw[i] end
 	else
 		ivBytes = {}
 		for i = 1, 16 do
 			ivBytes[i] = math.random(0, 255)
 		end
 	end
-	assert(#ivBytes == 16, "Initialization vector must be 16 bytes long")
 
 	local plain = AES.to_bytes(tostring(data))
 	local pad = 16 - (#plain % 16)
