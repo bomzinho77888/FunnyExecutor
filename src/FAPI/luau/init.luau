@@ -1066,8 +1066,8 @@ debug.getconstant = function(f, index)
 	local ktypes = proto.ktypes
 	if index < 1 or index > proto.sizek then return nil end
 	local kt = ktypes[index]
-	if kt == 4 then
-		return _resolve_import(proto, k[index])
+	if kt == 4 or kt == 0 or kt == 6 then
+		return nil
 	end
 	return k[index]
 end
@@ -1081,9 +1081,7 @@ debug.getconstants = function(f)
 	local result = {}
 	for i = 1, proto.sizek do
 		local kt = ktypes[i]
-		if kt == 4 then
-			result[i] = _resolve_import(proto, k[i])
-		else
+		if kt ~= 4 and kt ~= 0 and kt ~= 6 then
 			result[i] = k[i]
 		end
 	end
