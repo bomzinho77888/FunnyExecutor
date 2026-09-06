@@ -371,6 +371,20 @@ def recv_method(method, args):
             ctypes.windll.user32.ShowWindow(hwnd, 5 if method == 'rconsoleshow' else 0)
         return b'ok'
 
+    elif method == 'rconsolecreate':
+        console_ensure()
+        return b'ok'
+
+    elif method == 'rconsoledestroy':
+        try:
+            hwnd = ctypes.windll.kernel32.GetConsoleWindow()
+            if hwnd:
+                ctypes.windll.user32.DestroyWindow(hwnd)
+        except Exception:
+            pass
+        _console_state['allocated'] = False
+        return b'ok'
+
     elif method in ('openfiledialog', 'openfilesdialog', 'savefiledialog', 'openfolderdialog'):
         options = {}
         if args and args[0]:
