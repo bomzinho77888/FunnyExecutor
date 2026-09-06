@@ -2292,7 +2292,13 @@ end
 local loaded_modules = setmetatable({}, {__mode = 'k'})
 
 local function module_env(mod)
-	return setmetatable({script = mod, require = require}, {__index = getfenv()})
+	local real = getfenv()
+	return setmetatable({script = mod, require = require}, {
+		__index = real,
+		__newindex = function(_, k, v)
+			rawset(real, k, v)
+		end,
+	})
 end
 
 require = function(mod)
