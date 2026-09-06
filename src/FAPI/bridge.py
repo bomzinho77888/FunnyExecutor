@@ -523,14 +523,12 @@ def recv_method(method, args):
         return b'ok'
 
     elif method == 'listfiles':
+        if not path or not path.is_dir():
+            return b'fail'
         try:
-            rel_path = path.decode('utf-8') if isinstance(path, bytes) else str(path)
-            p = Path(rel_path)
-            if not p.is_dir():
-                return b'fail'
-            root = workspace_root
+            root = workspace_root.resolve()
             l = []
-            for i in p.iterdir():
+            for i in path.iterdir():
                 try:
                     rel = str(i.relative_to(root))
                 except ValueError:
