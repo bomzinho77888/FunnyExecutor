@@ -2712,6 +2712,7 @@ local signal_records = setmetatable({}, {__mode = 'k'})
 local instance_proxies = setmetatable({}, {__mode = 'k'})
 local proxy_instances = setmetatable({}, {__mode = 'k'})
 local raw_instance_new = Instance.new
+local signal_proxy_enabled = false
 
 local function unwrap_instance(value)
 	return proxy_instances[value] or value
@@ -2843,11 +2844,15 @@ Instance = setmetatable({}, {
 })
 Instance.new = function(class_name, parent)
 	local instance = raw_instance_new(class_name, unwrap_instance(parent))
-	if class_name == 'BindableEvent' or class_name == 'Part' then
+	if signal_proxy_enabled and (class_name == 'BindableEvent' or class_name == 'Part') then
 		return wrap_instance(instance)
 	end
 	return instance
 end
+
+task.delay(2, function()
+	signal_proxy_enabled = true
+end)
 
 getconnections = function(signal)
 	local record = signal_records[signal]
