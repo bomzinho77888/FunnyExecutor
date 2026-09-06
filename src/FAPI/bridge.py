@@ -67,6 +67,8 @@ def resolve_path(raw: bytes):
 # -- rconsole implementation (win32 console api) --
 
 _console_state = {'allocated': False}
+_log_buffer = []
+_log_lock = threading.Lock()
 
 def console_ensure():
     if not _console_state['allocated']:
@@ -523,17 +525,22 @@ def recv_method(method, args):
         return b'ok'
 
     elif method == 'listfiles':
-        if not path.is_dir():
+        try:
+            rel_path = path.decode('utf-8') if isinstance(path, bytes) else str(path)
+            p = Path(rel_path)
+            if not p.is_dir():
+                return b'fail'
+            root = workspace_root
+            l = []
+            for i in p.iterdir():
+                try:
+                    rel = str(i.relative_to(root))
+                except ValueError:
+                    rel = i.name
+                l.append(rel.encode('utf-8'))
+            return b'\n'.join(l)
+        except Exception:
             return b'fail'
-        root = workspace_root
-        l = []
-        for i in path.iterdir():
-            try:
-                rel = str(i.relative_to(root))
-            except ValueError:
-                rel = i.name
-            l.append(rel.encode('utf-8'))
-        return b'\n'.join(l)
 
     return b'bad request'
 
@@ -550,6 +557,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
         body_data = self.rfile.read(content_length)
+
+        # Check if this is a /log request (JSON body)
+        if self.path == '/log':
+            try:
+                data = json.loads(body_data.decode('utf-8'))
+                message = str(data.get('message', ''))
+                log_type = str(data.get('type', 'output'))
+                timestamp = data.get('timestamp')
+
+                with _log_lock:
+                    _log_buffer.append({
+                        'tag': log_type,
+                        'message': message,
+                        'timestamp': timestamp,
+                    })
+                self.send_response(204)
+                self.end_headers()
+                return
+            except Exception:
+                self.send_response(400)
+                self.end_headers()
+                return
 
         args = body_data.split(b'\n')
         method = args.pop(0).decode('utf-8')
