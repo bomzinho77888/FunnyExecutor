@@ -1003,14 +1003,14 @@ debug.getinfo = function(f, options)
 	local proto = dbi and dbi.proto
 
 	local ok_src, src_val = pcall(real_debug_info, fn, 's')
-	info.source = if ok_src then src_val else nil
+	info.source = if ok_src and src_val then src_val else nil
 	if not info.source and proto then
 		info.source = '=' .. (proto.debugname or 'unknown')
 	end
 	info.short_src = info.source or ''
 
 	local ok_line, line_val = pcall(real_debug_info, fn, 'l')
-	info.currentline = if ok_line and line_val then line_val else -1
+	info.currentline = if ok_line and type(line_val) == 'number' then line_val else -1
 
 	local ok_name, name_val = pcall(real_debug_info, fn, 'n')
 	info.name = if ok_name and name_val then name_val else (proto and proto.debugname) or ''
@@ -1018,19 +1018,21 @@ debug.getinfo = function(f, options)
 
 	info.func = fn
 
-	local ok_nups, nups_val = pcall(real_debug_info, fn, 'r')
-	info.nups = if ok_nups and nups_val then nups_val else (proto and proto.nups) or 0
-
-	local ok_np, np_val, va_val = pcall(real_debug_info, fn, 'a')
-	if ok_np and np_val then
-		info.numparams = np_val
-		info.is_vararg = va_val or 0
-	elseif proto then
-		info.numparams = proto.numparams
+	if proto then
+		info.nups = proto.nups or 0
+		info.numparams = proto.numparams or 0
 		info.is_vararg = proto.isvararg and 1 or 0
 	else
-		info.numparams = 0
-		info.is_vararg = 0
+		local ok_nups, nups_val = pcall(real_debug_info, fn, 'r')
+		info.nups = if ok_nups and type(nups_val) == 'number' then nups_val else 0
+		local ok_np, np_val, va_val = pcall(real_debug_info, fn, 'a')
+		if ok_np and type(np_val) == 'number' then
+			info.numparams = np_val
+			info.is_vararg = if type(va_val) == 'number' then va_val else 0
+		else
+			info.numparams = 0
+			info.is_vararg = 0
+		end
 	end
 
 	local src = info.source or ''
@@ -1042,7 +1044,9 @@ end
 debug.getconstant = function(f, index)
 	local dbi = _get_debug_info(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstant' (function expected)", 2) end
-	return dbi.proto.k[index]
+	local k = dbi.proto.k
+	if index < 1 or index > dbi.proto.sizek then return nil end
+	return k[index]
 end
 
 debug.getconstants = function(f)
@@ -1050,7 +1054,7 @@ debug.getconstants = function(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstants' (function expected)", 2) end
 	local result = {}
 	local k = dbi.proto.k
-	for i = 1, #k do
+	for i = 1, dbi.proto.sizek do
 		result[i] = k[i]
 	end
 	return result
@@ -1069,9 +1073,9 @@ debug.getupvalue = function(f, index)
 	if not uv then return nil end
 	local name = dbi.proto.upvaluenamelist and dbi.proto.upvaluenamelist[index]
 	if uv.index == "value" then
-		return name, uv.value
+		return uv.value, name
 	else
-		return name, uv.store[uv.index]
+		return uv.store[uv.index], name
 	end
 end
 
@@ -1113,9 +1117,10 @@ debug.getproto = function(f, index, active)
 	if not protos or not module then return nil end
 
 	if active then
-		-- return wrapped closures (instantiated with upvalues)
+		-- return array of wrapped closures
 		local result = {}
-		for i = 1, #protos do
+		local sizep = dbi.proto.sizep
+		for i = 1, sizep do
 			local pid = protos[i]
 			local childProto = module.protoList[pid]
 			if childProto then
@@ -1129,7 +1134,7 @@ debug.getproto = function(f, index, active)
 				result[i] = wrapclosure(module, childProto, upvalues)
 			end
 		end
-		return result[index]
+		return result
 	else
 		-- return unwrapped proto function
 		local pid = protos[index]
@@ -1155,7 +1160,8 @@ debug.getprotos = function(f)
 	local wrapclosure = dbi.wrapclosure
 	if not protos or not module then return {} end
 	local result = {}
-	for i = 1, #protos do
+	local sizep = dbi.proto.sizep
+	for i = 1, sizep do
 		local pid = protos[i]
 		local childProto = module.protoList[pid]
 		if childProto then
@@ -1176,9 +1182,8 @@ debug.getstack = function(level, index)
 	local csi = _fiu_call_stack_info
 	if not csi then return nil end
 
-	-- level 1 = current function, level 2 = caller, etc.
-	-- call_stack is 1-indexed, last element is the deepest (current)
-	local target = csi.n - level + 1
+	-- level 0 = current function (innermost), level 1 = caller, etc.
+	local target = csi.n - level
 	if target < 1 or target > csi.n then return nil end
 
 	local frame = csi.stack[target]
@@ -1211,7 +1216,7 @@ debug.setstack = function(level, index, value)
 	local csi = _fiu_call_stack_info
 	if not csi then return end
 
-	local target = csi.n - level + 1
+	local target = csi.n - level
 	if target < 1 or target > csi.n then return end
 
 	local frame = csi.stack[target]
