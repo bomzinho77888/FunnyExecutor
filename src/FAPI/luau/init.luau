@@ -2748,11 +2748,10 @@ isparallel = function()
 end
 
 run_on_actor = function(actor, source, ...)
-	assert(typeof(actor) == 'Instance', "invalid argument #1 to 'run_on_actor' (Actor expected, got " .. typeof(actor) .. ')', 2)
-	assert(type(source) == 'string', "invalid argument #2 to 'run_on_actor' (string expected, got " .. type(source) .. ')', 2)
 	local args = table.pack(...)
-	task.spawn(function()
-		local func, err = loadstring(source)
+
+	local function executeOnActor(a, s)
+		local func, err = loadstring(s)
 		if func then
 			local ok, run_err = pcall(func, table.unpack(args, 1, args.n))
 			if not ok then
@@ -2761,7 +2760,33 @@ run_on_actor = function(actor, source, ...)
 		else
 			warn('FunnyExecutor -- run_on_actor: ' .. tostring(err))
 		end
-	end)
+	end
+
+	if type(actor) == 'table' then
+		for _, a in actor do
+			if typeof(a) ~= 'Instance' then
+				warn('FunnyExecutor -- run_on_actor: invalid actor in table (Actor expected, got ' .. typeof(a) .. ')')
+				continue
+			end
+			if type(source) == 'table' then
+				for _, s in source do
+					task.spawn(executeOnActor, a, tostring(s))
+				end
+			else
+				task.spawn(executeOnActor, a, source)
+			end
+		end
+	elseif typeof(actor) == 'Instance' then
+		if type(source) == 'table' then
+			for _, s in source do
+				task.spawn(executeOnActor, actor, tostring(s))
+			end
+		else
+			task.spawn(executeOnActor, actor, source)
+		end
+	else
+		error("invalid argument #1 to 'run_on_actor' (Actor or table expected, got " .. typeof(actor) .. ')', 2)
+	end
 end
 
 local comm_channels = {}
