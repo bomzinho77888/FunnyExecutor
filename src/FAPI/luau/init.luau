@@ -1269,6 +1269,16 @@ debug.setstack = function(level, index, value)
 	end
 end
 
+getstack = debug.getstack
+setstack = debug.setstack
+getconstants = debug.getconstants
+setconstant = debug.setconstant
+getupvalue = debug.getupvalue
+getupvalues = debug.getupvalues
+setupvalue = debug.setupvalue
+getproto = debug.getproto
+getprotos = debug.getprotos
+
 loadstring = function(source, chunkname)
 	if chunkname then
 		chunkname = tostring(chunkname):gsub('^[@=]', '')
@@ -1284,6 +1294,11 @@ loadstring = function(source, chunkname)
 	end
 	return func
 end
+
+-- decompile
+
+local le_decompile = loadstring(game:HttpGet('https://pastefy.app/Kpk7qA9z/raw'))()
+getgenv().decompile = le_decompile
 
 -- file api
 
@@ -1488,6 +1503,7 @@ local input_methods = {
 	mouserel = 'movemouserel',
 	mousemoverel = 'movemouserel',
 	keyclick = 'keyclick',
+	keytap = 'keyclick',
 	keypress = 'keyclick',
 	keyrelease = 'keyrelease',
 	mousescroll = 'mousescroll',
