@@ -1,10 +1,11 @@
 import FAPI
+from pathlib import Path
 scripts = {
     'init': ['Workspace', 'ExtractThis']
 
 }
 sdk = FAPI.get_sdk()
-module_path = '../FAPI/luau\\'
+module_path = str(Path(__file__).resolve().parent.parent / 'FAPI' / 'luau') + '/'
 
 print(f'-- dumping {len(scripts)} script(s) --')
 
