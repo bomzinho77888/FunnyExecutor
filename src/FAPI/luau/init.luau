@@ -387,15 +387,13 @@ getgenv = function()
 end
 
 do
-	local ok = pcall(function()
-		local env = getfenv()
-		local meta = getmetatable(env)
-		if type(meta) ~= 'table' then
-			meta = {}
-		end
-		meta.__index = genv_table
-		setmetatable(env, meta)
-	end)
+	local env = _fiu_env_ref or getfenv()
+	local meta = getmetatable(env)
+	if type(meta) ~= 'table' then
+		meta = {}
+	end
+	meta.__index = genv_table
+	setmetatable(env, meta)
 end
 
 local renv_table = {
@@ -1275,7 +1273,7 @@ loadstring = function(source, chunkname)
 	if not response or response:sub(1, 4) == 'fail' then
 		return nil, 'FunnyExecutor -- loadstring error: ' .. tostring(response)
 	end
-	local func = load_bytecode(base64decode(response), getfenv())
+	local func = load_bytecode(base64decode(response), _fiu_env_ref or getfenv())
 	if chunkname and chunkname ~= '' then
 		chunk_sources[func] = chunkname
 	end
@@ -2292,13 +2290,7 @@ end
 local loaded_modules = setmetatable({}, {__mode = 'k'})
 
 local function module_env(mod)
-	local real = getfenv()
-	return setmetatable({script = mod, require = require}, {
-		__index = real,
-		__newindex = function(_, k, v)
-			rawset(real, k, v)
-		end,
-	})
+	return setmetatable({script = mod, require = require}, {__index = _fiu_env_ref or getfenv()})
 end
 
 require = function(mod)
@@ -2747,7 +2739,7 @@ task.spawn(function()
 				local data = requestData()
 				if data then
 					local ok, err = pcall(function()
-						load_bytecode(data, getfenv())()
+						load_bytecode(data, _fiu_env_ref or getfenv())()
 					end)
 					if not ok then
 						warn('FunnyExecutor -- execution error: ' .. tostring(err))
