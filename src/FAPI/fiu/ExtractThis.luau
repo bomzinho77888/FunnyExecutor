@@ -501,10 +501,13 @@ local function luau_deserialize(bytecode, luau_settings)
 
 		local sizek = readVarInt()
 		local klist = table_create(sizek)
+		local ktypes = table_create(sizek)
 
 		for i = 1, sizek do
 			local kt = readByte()
 			local k
+
+			ktypes[i] = kt
 
 			if kt == 0 then --// Nil
 				k = nil
@@ -631,6 +634,7 @@ local function luau_deserialize(bytecode, luau_settings)
 
 			sizek = sizek;
 			k = klist;
+			ktypes = ktypes;
 
 			sizep = sizep;
 			protos = protolist;

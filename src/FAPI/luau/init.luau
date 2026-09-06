@@ -1045,8 +1045,22 @@ debug.getconstant = function(f, index)
 	local dbi = _get_debug_info(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstant' (function expected)", 2) end
 	local k = dbi.proto.k
-	if index < 1 or index > dbi.proto.sizek then return nil end
-	return k[index]
+	local ktypes = dbi.proto.ktypes
+	local sizek = dbi.proto.sizek
+
+	-- Skip non-literal constants (imports=4, tables=5, closures=6, vectors=7)
+	-- Only return literal constants: nil=0, bool=1, number=2, string=3
+	local count = 0
+	for i = 1, sizek do
+		local kt = ktypes[i]
+		if kt <= 3 then
+			count += 1
+			if count == index then
+				return k[i]
+			end
+		end
+	end
+	return nil
 end
 
 debug.getconstants = function(f)
@@ -1054,8 +1068,16 @@ debug.getconstants = function(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstants' (function expected)", 2) end
 	local result = {}
 	local k = dbi.proto.k
-	for i = 1, dbi.proto.sizek do
-		result[i] = k[i]
+	local ktypes = dbi.proto.ktypes
+	local sizek = dbi.proto.sizek
+
+	local count = 0
+	for i = 1, sizek do
+		local kt = ktypes[i]
+		if kt <= 3 then
+			count += 1
+			result[count] = k[i]
+		end
 	end
 	return result
 end
@@ -1063,7 +1085,54 @@ end
 debug.setconstant = function(f, index, value)
 	local dbi = _get_debug_info(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'setconstant' (function expected)", 2) end
-	dbi.proto.k[index] = value
+	local proto = dbi.proto
+	local k = proto.k
+	local ktypes = proto.ktypes
+	local sizek = proto.sizek
+
+	-- Map user-facing index to raw constant index, skipping non-literal constants
+	local count = 0
+	local rawIndex = nil
+	for i = 1, sizek do
+		local kt = ktypes[i]
+		if kt <= 3 then
+			count += 1
+			if count == index then
+				rawIndex = i
+				break
+			end
+		end
+	end
+
+	if not rawIndex then return end
+
+	k[rawIndex] = value
+
+	-- Update instruction K values that reference this constant
+	for pc = 1, proto.sizecode do
+		local inst = proto.code[pc]
+		local kmode = inst.kmode
+
+		if kmode == 1 and inst.aux + 1 == rawIndex then
+			-- AUX: inst.K = k[inst.aux + 1]
+			inst.K = value
+		elseif kmode == 2 and inst.C + 1 == rawIndex then
+			-- C: inst.K = k[inst.C + 1]
+			inst.K = value
+		elseif kmode == 3 and inst.D + 1 == rawIndex then
+			-- D: inst.K = k[inst.D + 1]
+			inst.K = value
+		elseif kmode == 6 then
+			-- AUX number low 24 bits: inst.K = k[bit32_extract(inst.aux, 0, 24) + 1]
+			local auxIndex = bit32.band(bit32.rshift(inst.aux, 0), 0xFFFFFF) + 1
+			if auxIndex == rawIndex then
+				inst.K = value
+			end
+		elseif kmode == 7 and inst.B + 1 == rawIndex then
+			-- B: inst.K = k[inst.B + 1]
+			inst.K = value
+		end
+	end
 end
 
 debug.getupvalue = function(f, index)
@@ -1195,7 +1264,8 @@ debug.getstack = function(level, index)
 		if locallist and locallist[index] then
 			return frame.stack[locallist[index].reg]
 		end
-		return frame.stack[index]
+		-- fiu VM uses 0-indexed registers, convert from 1-based user index
+		return frame.stack[index - 1]
 	else
 		local result = {}
 		local locallist = frame.proto.locallist
@@ -1205,7 +1275,7 @@ debug.getstack = function(level, index)
 			end
 		else
 			for i = 1, frame.proto.maxstacksize do
-				result[i] = frame.stack[i]
+				result[i] = frame.stack[i - 1]
 			end
 		end
 		return result
@@ -1226,7 +1296,8 @@ debug.setstack = function(level, index, value)
 		if locallist and locallist[index] then
 			frame.stack[locallist[index].reg] = value
 		else
-			frame.stack[index] = value
+			-- fiu VM uses 0-indexed registers, convert from 1-based user index
+			frame.stack[index - 1] = value
 		end
 	end
 end
