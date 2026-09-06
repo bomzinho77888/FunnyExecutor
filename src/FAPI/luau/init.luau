@@ -1704,12 +1704,14 @@ cloneref = function(obj)
 	local proxy = newproxy(true)
 	local meta = getmetatable(proxy)
 	clonerefs[proxy] = obj
-	meta.__index = function(t, n)
-		local o = clone_target(t)
+	meta.__index = function(_, n)
+		local o = clonerefs[proxy]
+		if not o then error('cloneref target is no longer valid', 2) end
 		local v = o[n]
 		if typeof(v) == 'function' then
+			local ref = proxy
 			return function(self, ...)
-				if self == t then
+				if self == ref then
 					self = o
 				end
 				return v(self, ...)
@@ -1717,11 +1719,15 @@ cloneref = function(obj)
 		end
 		return v
 	end
-	meta.__newindex = function(t, n, v)
-		clone_target(t)[n] = v
+	meta.__newindex = function(_, n, v)
+		local o = clonerefs[proxy]
+		if not o then error('cloneref target is no longer valid', 2) end
+		o[n] = v
 	end
-	meta.__tostring = function(t)
-		return tostring(clone_target(t))
+	meta.__tostring = function()
+		local o = clonerefs[proxy]
+		if not o then return '' end
+		return tostring(o)
 	end
 	meta.__metatable = getmetatable(obj)
 	return proxy
