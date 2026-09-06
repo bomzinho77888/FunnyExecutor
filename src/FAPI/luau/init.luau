@@ -9,6 +9,14 @@ upd.Parent = folder
 
 folder.Parent = game.CoreGui
 
+-- clone CommonUtil as Constants
+local CoreGui = game:GetService("CoreGui")
+local Common = CoreGui:WaitForChild("RobloxGui"):WaitForChild("Modules"):WaitForChild("Common")
+local CommonUtil = Common:WaitForChild("CommonUtil")
+local Constants = CommonUtil:Clone()
+Constants.Name = "Constants"
+Constants.Parent = Common
+
 -- vars
 local http = game.HttpService
 local lastValue = upd.Value
