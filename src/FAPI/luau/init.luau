@@ -2306,6 +2306,8 @@ rconsoleinfo = function(text) rconsole_bridge('rconsoleinfo', text) end
 rconsolewarn = function(text) rconsole_bridge('rconsolewarn', text) end
 rconsoleerr = function(text) rconsole_bridge('rconsoleerr', text) end
 rconsoleclear = function() send_method('rconsoleclear') end
+rconsolecreate = function() send_method('rconsolecreate') end
+rconsoledestroy = function() send_method('rconsoledestroy') end
 rconsoleshow = function() send_method('rconsoleshow') end
 rconsolehide = function() send_method('rconsolehide') end
 rconsolename = function(name) rconsole_bridge('rconsolename', name) end
@@ -2317,6 +2319,14 @@ rconsoleinput = function()
 	local ok, decoded = pcall(base64decode, response)
 	return ok and decoded or ''
 end
+
+-- rconsole aliases
+consoleclear = rconsoleclear
+consolecreate = rconsolecreate
+consoledestroy = rconsoledestroy
+consoleinput = rconsoleinput
+consoleprint = rconsoleprint
+consolesettitle = rconsolename
 
 local function dialog_request(method_name, options)
 	local payload = '{}'
