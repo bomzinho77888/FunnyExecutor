@@ -43,6 +43,25 @@ def is_blocked(path: Path) -> bool:
     return path.name.rstrip(' .').lower().endswith(tuple(blocked_extensions))
 
 workspace_root = parent / 'workspace'
+asset_cache = parent / 'assets'
+
+def roblox_content_dir():
+    candidates = []
+    if _sdk is not None:
+        try:
+            candidates.append(Path(psutil.Process(_sdk.mem.process_id).exe()).parent / 'content')
+        except Exception:
+            pass
+    for process in psutil.process_iter(['name', 'exe']):
+        try:
+            if process.info['name'] and process.info['name'].lower() == 'robloxplayerbeta.exe':
+                candidates.append(Path(process.info['exe']).parent / 'content')
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return None
 
 _websocket_connections = {}
 _websocket_lock = Lock()
@@ -364,6 +383,20 @@ def recv_method(method, args):
             return b'fail'
         connection.close()
         return b'ok'
+
+    elif method == 'getcustomasset':
+        if path is None or not path.is_file():
+            return b'fail'
+        try:
+            content_dir = roblox_content_dir()
+            if content_dir is None:
+                return b'fail'
+            asset_cache.mkdir(parents=True, exist_ok=True)
+            destination = content_dir / path.name
+            shutil.copyfile(path, destination)
+            return ('rbxasset://' + path.name).encode('utf-8')
+        except (OSError, shutil.Error):
+            return b'fail'
 
     if method == 'setclipboard':
         try:

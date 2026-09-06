@@ -1423,6 +1423,15 @@ delfile = function(path)
 	end
 end
 
+getcustomasset = function(path)
+	assert(type(path) == 'string', "invalid argument #1 to 'getcustomasset' (string expected, got " .. type(path) .. ')', 2)
+	local response = send_method('getcustomasset', path)
+	if response == 'fail' or not response or #response < 5 then
+		error('FunnyExecutor -- getcustomasset: cannot create asset: ' .. path, 2)
+	end
+	return response
+end
+
 delfolder = function(path)
 	assert(type(path) == 'string', "invalid argument #1 to 'delfolder' (string expected, got " .. type(path) .. ')', 2)
 	local response = send_method('delfolder', path)
