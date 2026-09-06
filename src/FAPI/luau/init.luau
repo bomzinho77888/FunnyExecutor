@@ -1041,42 +1041,50 @@ debug.getinfo = function(f, options)
 	return info
 end
 
+local function _resolve_import(proto, value)
+	-- Decode import word: bits 30-31=count, 20-29=id0, 10-19=id1, 0-9=id2
+	local count = bit32.rshift(value, 30)
+	local id0 = bit32.band(bit32.rshift(value, 20), 0x3FF)
+	local k = proto.k
+	local name = k[id0 + 1] or ""
+	if count >= 2 then
+		local id1 = bit32.band(bit32.rshift(value, 10), 0x3FF)
+		name = name .. "." .. (k[id1 + 1] or "")
+	end
+	if count >= 3 then
+		local id2 = bit32.band(value, 0x3FF)
+		name = name .. "." .. (k[id2 + 1] or "")
+	end
+	return name
+end
+
 debug.getconstant = function(f, index)
 	local dbi = _get_debug_info(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstant' (function expected)", 2) end
-	local k = dbi.proto.k
-	local ktypes = dbi.proto.ktypes
-	local sizek = dbi.proto.sizek
-
-	-- Skip non-literal constants (imports=4, tables=5, closures=6, vectors=7)
-	-- Only return literal constants: nil=0, bool=1, number=2, string=3
-	local count = 0
-	for i = 1, sizek do
-		local kt = ktypes[i]
-		if kt <= 3 then
-			count += 1
-			if count == index then
-				return k[i]
-			end
-		end
+	local proto = dbi.proto
+	local k = proto.k
+	local ktypes = proto.ktypes
+	if index < 1 or index > proto.sizek then return nil end
+	local kt = ktypes[index]
+	if kt == 4 then
+		return _resolve_import(proto, k[index])
 	end
-	return nil
+	return k[index]
 end
 
 debug.getconstants = function(f)
 	local dbi = _get_debug_info(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'getconstants' (function expected)", 2) end
+	local proto = dbi.proto
+	local k = proto.k
+	local ktypes = proto.ktypes
 	local result = {}
-	local k = dbi.proto.k
-	local ktypes = dbi.proto.ktypes
-	local sizek = dbi.proto.sizek
-
-	local count = 0
-	for i = 1, sizek do
+	for i = 1, proto.sizek do
 		local kt = ktypes[i]
-		if kt <= 3 then
-			count += 1
-			result[count] = k[i]
+		if kt == 4 then
+			result[i] = _resolve_import(proto, k[i])
+		else
+			result[i] = k[i]
 		end
 	end
 	return result
@@ -1086,50 +1094,27 @@ debug.setconstant = function(f, index, value)
 	local dbi = _get_debug_info(f)
 	if not dbi or not dbi.proto then error("bad argument #1 to 'setconstant' (function expected)", 2) end
 	local proto = dbi.proto
-	local k = proto.k
-	local ktypes = proto.ktypes
-	local sizek = proto.sizek
+	if index < 1 or index > proto.sizek then return end
 
-	-- Map user-facing index to raw constant index, skipping non-literal constants
-	local count = 0
-	local rawIndex = nil
-	for i = 1, sizek do
-		local kt = ktypes[i]
-		if kt <= 3 then
-			count += 1
-			if count == index then
-				rawIndex = i
-				break
-			end
-		end
-	end
-
-	if not rawIndex then return end
-
-	k[rawIndex] = value
+	proto.k[index] = value
 
 	-- Update instruction K values that reference this constant
 	for pc = 1, proto.sizecode do
 		local inst = proto.code[pc]
 		local kmode = inst.kmode
 
-		if kmode == 1 and inst.aux + 1 == rawIndex then
-			-- AUX: inst.K = k[inst.aux + 1]
+		if kmode == 1 and inst.aux + 1 == index then
 			inst.K = value
-		elseif kmode == 2 and inst.C + 1 == rawIndex then
-			-- C: inst.K = k[inst.C + 1]
+		elseif kmode == 2 and inst.C + 1 == index then
 			inst.K = value
-		elseif kmode == 3 and inst.D + 1 == rawIndex then
-			-- D: inst.K = k[inst.D + 1]
+		elseif kmode == 3 and inst.D + 1 == index then
 			inst.K = value
 		elseif kmode == 6 then
-			-- AUX number low 24 bits: inst.K = k[bit32_extract(inst.aux, 0, 24) + 1]
 			local auxIndex = bit32.band(bit32.rshift(inst.aux, 0), 0xFFFFFF) + 1
-			if auxIndex == rawIndex then
+			if auxIndex == index then
 				inst.K = value
 			end
-		elseif kmode == 7 and inst.B + 1 == rawIndex then
-			-- B: inst.K = k[inst.B + 1]
+		elseif kmode == 7 and inst.B + 1 == index then
 			inst.K = value
 		end
 	end
@@ -1251,8 +1236,8 @@ debug.getstack = function(level, index)
 	local csi = _fiu_call_stack_info
 	if not csi then return nil end
 
-	-- level 0 = current function (innermost), level 1 = caller, etc.
-	local target = csi.n - level
+	-- level 1 = current function (innermost), level 2 = caller, etc.
+	local target = csi.n - level + 1
 	if target < 1 or target > csi.n then return nil end
 
 	local frame = csi.stack[target]
@@ -1286,7 +1271,8 @@ debug.setstack = function(level, index, value)
 	local csi = _fiu_call_stack_info
 	if not csi then return end
 
-	local target = csi.n - level
+	-- level 1 = current function (innermost), level 2 = caller, etc.
+	local target = csi.n - level + 1
 	if target < 1 or target > csi.n then return end
 
 	local frame = csi.stack[target]
