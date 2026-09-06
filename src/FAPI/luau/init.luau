@@ -845,7 +845,21 @@ crypt.encrypt = function(data, key, initVector, mode)
 
 	local keyBytes = AES.to_bytes(base64decode(key))
 	assert(#keyBytes == 16 or #keyBytes == 24 or #keyBytes == 32, "Key must be either 16, 24 or 32 bytes long")
-	local ivBytes = AES.to_bytes(base64decode(initVector))
+
+	local ivBytes
+	if initVector ~= nil then
+		ivBytes = AES.to_bytes(base64decode(initVector))
+		if #ivBytes > 16 then
+			local truncated = {}
+			for i = 1, 16 do truncated[i] = ivBytes[i] end
+			ivBytes = truncated
+		end
+	else
+		ivBytes = {}
+		for i = 1, 16 do
+			ivBytes[i] = math.random(0, 255)
+		end
+	end
 	assert(#ivBytes == 16, "Initialization vector must be 16 bytes long")
 
 	local plain = AES.to_bytes(tostring(data))
@@ -855,7 +869,7 @@ crypt.encrypt = function(data, key, initVector, mode)
 	end
 
 	local cipher = AES.encrypt_CBC(keyBytes, plain, ivBytes)
-	return base64encode(AES.to_string(cipher))
+	return base64encode(AES.to_string(cipher)), base64encode(AES.to_string(ivBytes))
 end
 
 crypt.decrypt = function(data, key, initVector, mode)
@@ -867,6 +881,11 @@ crypt.decrypt = function(data, key, initVector, mode)
 	local keyBytes = AES.to_bytes(base64decode(key))
 	assert(#keyBytes == 16 or #keyBytes == 24 or #keyBytes == 32, "Key must be either 16, 24 or 32 bytes long")
 	local ivBytes = AES.to_bytes(base64decode(initVector))
+	if #ivBytes > 16 then
+		local truncated = {}
+		for i = 1, 16 do truncated[i] = ivBytes[i] end
+		ivBytes = truncated
+	end
 	assert(#ivBytes == 16, "Initialization vector must be 16 bytes long")
 
 	local plain = AES.decrypt_CBC(keyBytes, AES.to_bytes(base64decode(data)), ivBytes)
