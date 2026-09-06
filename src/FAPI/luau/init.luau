@@ -2708,6 +2708,265 @@ function Signal.new()
 	return signal
 end
 
+local signal_records = setmetatable({}, {__mode = 'k'})
+local instance_proxies = setmetatable({}, {__mode = 'k'})
+local proxy_instances = setmetatable({}, {__mode = 'k'})
+local raw_instance_new = Instance.new
+
+local function unwrap_instance(value)
+	return proxy_instances[value] or value
+end
+
+local function make_connection(record, callback)
+	local entry = {
+		Enabled = true,
+		Function = callback,
+		Thread = coroutine.running(),
+	}
+	entry.connection = record.raw_signal:Connect(function(...)
+		if entry.Enabled then
+			callback(...)
+		end
+	end)
+	table.insert(record.connections, entry)
+
+	local proxy = {}
+	proxy.Connected = true
+	proxy.Enabled = true
+	proxy.ForeignState = false
+	proxy.LuaConnection = true
+	proxy.Function = callback
+	proxy.Thread = entry.Thread
+	function proxy:Disconnect()
+		if not self.Connected then return end
+		self.Connected = false
+		self.Enabled = false
+		entry.Enabled = false
+		entry.connection:Disconnect()
+	end
+	function proxy:Disable()
+		self.Enabled = false
+		entry.Enabled = false
+	end
+	function proxy:Enable()
+		if self.Connected then
+			self.Enabled = true
+			entry.Enabled = true
+		end
+	end
+	function proxy:Fire(...)
+		if self.Connected and self.Enabled then
+			callback(...)
+		end
+	end
+	function proxy:Defer(...)
+		if self.Connected and self.Enabled then
+			task.defer(callback, ...)
+		end
+	end
+	entry.proxy = proxy
+	return proxy
+end
+
+local function wrap_signal(raw_signal, event_name, parent)
+	if signal_records[raw_signal] then
+		return signal_records[raw_signal].proxy
+	end
+
+	local record = {
+		raw_signal = raw_signal,
+		connections = {},
+		event_name = event_name,
+		parent = parent,
+	}
+	local proxy = {}
+	record.proxy = proxy
+	signal_records[proxy] = record
+
+	function proxy:Connect(callback)
+		assert(type(callback) == 'function', "invalid argument #1 to 'Connect' (function expected, got " .. type(callback) .. ')', 2)
+		return make_connection(record, callback)
+	end
+	function proxy:Once(callback)
+		local connection
+		connection = self:Connect(function(...)
+			connection:Disconnect()
+			callback(...)
+		end)
+		return connection
+	end
+	function proxy:Wait()
+		return record.raw_signal:Wait()
+	end
+	return proxy
+end
+
+local function wrap_instance(instance)
+	if instance_proxies[instance] then
+		return instance_proxies[instance]
+	end
+
+	local proxy = {}
+	instance_proxies[instance] = proxy
+	proxy_instances[proxy] = instance
+	setmetatable(proxy, {
+		__index = function(_, key)
+			if key == 'Event' and instance:IsA('BindableEvent') then
+				return wrap_signal(instance.Event, 'Event', proxy)
+			elseif key == 'Touched' and instance:IsA('BasePart') then
+				return wrap_signal(instance.Touched, 'Touched', proxy)
+			end
+			local value = instance[key]
+			if type(value) == 'function' then
+				return function(_, ...)
+					local args = table.pack(...)
+					for index = 1, args.n do args[index] = unwrap_instance(args[index]) end
+					local result = value(instance, table.unpack(args, 1, args.n))
+					if typeof(result) == 'Instance' then return wrap_instance(result) end
+					return result
+				end
+			end
+			return value
+		end,
+		__newindex = function(_, key, value)
+			instance[key] = unwrap_instance(value)
+		end,
+		__tostring = function() return tostring(instance) end,
+	})
+	return proxy
+end
+
+local raw_instance = Instance
+Instance = setmetatable({}, {
+	__index = raw_instance,
+	__newindex = function(_, key, value) raw_instance[key] = value end,
+})
+Instance.new = function(class_name, parent)
+	local instance = raw_instance_new(class_name, unwrap_instance(parent))
+	if class_name == 'BindableEvent' or class_name == 'Part' then
+		return wrap_instance(instance)
+	end
+	return instance
+end
+
+getconnections = function(signal)
+	local record = signal_records[signal]
+	assert(record, "invalid argument #1 to 'getconnections' (RBXScriptSignal expected)", 2)
+	local result = {}
+	for _, entry in ipairs(record.connections) do
+		if entry.connection.Connected then
+			result[#result + 1] = entry.proxy
+		end
+	end
+	return result
+end
+
+firesignal = function(signal, ...)
+	local record = signal_records[signal]
+	assert(record, "invalid argument #1 to 'firesignal' (RBXScriptSignal expected)", 2)
+	record.parent = record.parent or nil
+	record.parent_raw = unwrap_instance(record.parent)
+	if record.parent_raw and record.parent_raw:IsA('BindableEvent') then
+		record.parent_raw:Fire(...)
+	else
+		record.raw_signal:Fire(...)
+	end
+end
+
+getsignalarguments = function(signal)
+	local record = signal_records[signal]
+	if record and record.event_name == 'Touched' then
+		return {'otherPart'}
+	end
+	return {'...'}
+end
+
+getsignalargumentsinfo = function(signal)
+	local arguments = getsignalarguments(signal)
+	local result = {}
+	for _, name in ipairs(arguments) do
+		result[#result + 1] = {Name = name, Type = 'Instance'}
+	end
+	return result
+end
+
+getsignalwhitelist = function()
+	return {
+		{Event = 'Touched', Parent = 'BasePart'},
+		{Event = 'Event', Parent = 'BindableEvent'},
+	}
+end
+
+cansignalreplicate = function(signal)
+	return false
+end
+
+replicatesignal = function()
+	error('signal cannot be replicated by this executor', 2)
+end
+
+local function websocket_poll(connection_id, socket)
+	while not socket._closed do
+		local response = send_method('wspoll', connection_id)
+		if response == 'fail' or not response then
+			socket._closed = true
+			socket.OnClose:Fire()
+			return
+		end
+
+		local ok, events = pcall(function()
+			return http:JSONDecode(base64decode(response))
+		end)
+		if not ok then
+			socket._closed = true
+			socket.OnClose:Fire()
+			return
+		end
+
+		for _, event in ipairs(events) do
+			if event.type == 'message' then
+				socket.OnMessage:Fire(base64decode(event.data))
+			elseif event.type == 'close' then
+				socket._closed = true
+				socket.OnClose:Fire()
+			end
+		end
+		task.wait(0.05)
+	end
+end
+
+WebSocket = {}
+WebSocket.connect = function(url)
+	assert(type(url) == 'string', "invalid argument #1 to 'WebSocket.connect' (string expected, got " .. type(url) .. ')', 2)
+	local connection_id = send_method('wsconnect', base64encode(url))
+	assert(connection_id and connection_id ~= 'fail', 'WebSocket connection failed', 2)
+
+	local socket = {
+		_closed = false,
+		OnClose = Signal.new(),
+		OnMessage = Signal.new(),
+	}
+	function socket:Send(data, is_binary)
+		assert(type(data) == 'string', "invalid argument #1 to 'WebSocketObject:Send' (string expected, got " .. type(data) .. ')', 2)
+		assert(not self._closed, 'WebSocket is closed', 2)
+		local result = send_method('wssend', connection_id, is_binary and '1' or '0', base64encode(data))
+		assert(result == 'ok', 'WebSocket send failed', 2)
+	end
+	function socket:Close()
+		if self._closed then
+			return
+		end
+		self._closed = true
+		send_method('wsclose', connection_id)
+		self.OnClose:Fire()
+	end
+
+	task.spawn(websocket_poll, connection_id, socket)
+	return socket
+end
+
+websocket = {connect = WebSocket.connect}
+
 local function rconsole_bridge(method, text)
 	local response = send_method(method, base64encode(tostring(text)))
 	if response ~= 'ok' then
@@ -2805,13 +3064,13 @@ end
 wrapped_task.desynchronize = function(...)
 	parallel_threads[coroutine.running()] = true
 	if raw_task.desynchronize then
-		return raw_task.desynchronize(...)
+		pcall(raw_task.desynchronize, ...)
 	end
 end
 wrapped_task.synchronize = function(...)
 	parallel_threads[coroutine.running()] = nil
 	if raw_task.synchronize then
-		return raw_task.synchronize(...)
+		pcall(raw_task.synchronize, ...)
 	end
 end
 task = wrapped_task
@@ -2884,23 +3143,6 @@ run_on_actor = function(actor, source, ...)
 		actorArgs[index] = cloneValue(actorArgs[index])
 	end
 
-	local function executeOnActor(a, s, args)
-		local func, err = loadstring(s)
-		if func then
-			local env = getfenv(func)
-			if type(env) == 'table' then
-				env.actor = a
-				env.script = a
-			end
-			local ok, run_err = pcall(func, table.unpack(args, 1, args.n))
-			if not ok then
-				warn('FunnyExecutor -- run_on_actor: ' .. tostring(run_err))
-			end
-		else
-			warn('FunnyExecutor -- run_on_actor: ' .. tostring(err))
-		end
-	end
-
 	local actors = {}
 	if type(actor) == 'table' then
 		for _, a in actor do
@@ -2925,9 +3167,31 @@ run_on_actor = function(actor, source, ...)
 		sources[#sources + 1] = tostring(source)
 	end
 
+	local channel = '__FunnyExecutorRunOnActor_' .. tostring(os.clock())
 	for _, a in ipairs(actors) do
 		for _, s in ipairs(sources) do
-			task.spawn(executeOnActor, a, s, actorArgs)
+			a:BindToMessageParallel(channel, function(...)
+				local func, err = loadstring(s)
+				if not func then
+					warn('FunnyExecutor -- run_on_actor: ' .. tostring(err))
+					return
+				end
+
+				local env = getfenv(func)
+				if type(env) == 'table' then
+					env.actor = a
+					env.script = a
+				end
+
+				local ok, run_err = pcall(func, ...)
+				if not ok then
+					warn('FunnyExecutor -- run_on_actor: ' .. tostring(run_err))
+				end
+			end)
+			a:SendMessage(channel, table.unpack(actorArgs, 1, actorArgs.n))
+			task.delay(1, function()
+				pcall(a.UnbindFromMessage, a, channel)
+			end)
 		end
 	end
 end

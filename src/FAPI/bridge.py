@@ -6,9 +6,11 @@ import hmac as hmac_mod
 import json
 import shutil
 import subprocess
+from itertools import count
 from http.server import BaseHTTPRequestHandler
 import socketserver
-from threading import Thread
+from queue import Empty, Queue
+from threading import Lock, Thread
 import os
 from pathlib import Path, PureWindowsPath
 from shutil import rmtree
@@ -16,6 +18,7 @@ from shutil import rmtree
 import pydirectinput
 import psutil
 import pyperclip
+import websocket
 from .compiler import Luau
 
 appdata = Path(os.environ['APPDATA'])
@@ -40,6 +43,62 @@ def is_blocked(path: Path) -> bool:
     return path.name.rstrip(' .').lower().endswith(tuple(blocked_extensions))
 
 workspace_root = parent / 'workspace'
+
+_websocket_connections = {}
+_websocket_lock = Lock()
+_websocket_ids = count(1)
+
+class _WebSocketConnection:
+    def __init__(self, url):
+        self.socket = websocket.create_connection(url, timeout=5)
+        self.socket.settimeout(0.5)
+        self.events = Queue()
+        self.closed = False
+        Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        try:
+            while True:
+                try:
+                    data = self.socket.recv()
+                except websocket.WebSocketTimeoutException:
+                    continue
+                if data is None:
+                    break
+                if isinstance(data, str):
+                    payload = data.encode('utf-8')
+                    binary = False
+                else:
+                    payload = bytes(data)
+                    binary = True
+                self.events.put({
+                    'type': 'message',
+                    'binary': binary,
+                    'data': base64.b64encode(payload).decode('ascii'),
+                })
+        except Exception:
+            pass
+        finally:
+            if not self.closed:
+                self.closed = True
+                self.events.put({'type': 'close'})
+
+    def send(self, payload, binary):
+        opcode = websocket.ABNF.OPCODE_BINARY if binary else websocket.ABNF.OPCODE_TEXT
+        self.socket.send(payload, opcode=opcode)
+
+    def close(self):
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.socket.close()
+        finally:
+            self.events.put({'type': 'close'})
+
+def _websocket_get(connection_id):
+    with _websocket_lock:
+        return _websocket_connections.get(connection_id)
 
 def resolve_path(raw: bytes):
     """Resolve a script-supplied relative path inside the workspace sandbox.
@@ -262,6 +321,49 @@ def recv_method(method, args):
             return b'ok'
         except Exception:
             return b'fail'
+
+    if method == 'wsconnect':
+        try:
+            url = base64.b64decode(args[0]).decode('utf-8')
+            connection = _WebSocketConnection(url)
+            connection_id = str(next(_websocket_ids))
+            with _websocket_lock:
+                _websocket_connections[connection_id] = connection
+            return connection_id.encode('ascii')
+        except Exception:
+            return b'fail'
+
+    elif method == 'wssend':
+        try:
+            connection = _websocket_get(args[0].decode('ascii'))
+            payload = base64.b64decode(args[2])
+            binary = args[1].decode('ascii') == '1'
+            if connection is None:
+                return b'fail'
+            connection.send(payload, binary)
+            return b'ok'
+        except Exception:
+            return b'fail'
+
+    elif method == 'wspoll':
+        connection = _websocket_get(args[0].decode('ascii')) if args else None
+        if connection is None:
+            return b'fail'
+        events = []
+        while len(events) < 64:
+            try:
+                events.append(connection.events.get_nowait())
+            except Empty:
+                break
+        return base64.b64encode(json.dumps(events).encode('utf-8'))
+
+    elif method == 'wsclose':
+        connection_id = args[0].decode('ascii') if args else ''
+        connection = _websocket_get(connection_id)
+        if connection is None:
+            return b'fail'
+        connection.close()
+        return b'ok'
 
     if method == 'setclipboard':
         try:

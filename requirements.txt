@@ -2,6 +2,7 @@ pymem
 pywin32
 pydirectinput
 requests
+websocket-client
 pyperclip
 psutil
 PySide6
